@@ -416,6 +416,19 @@ class MockMuse:
         intent = classify_reply(_last_user_text(messages))
         offer = context.get("open_offer")
         user_text = _last_user_text(messages)
+        if intent == "accept" and offer and _known(context, results, "get_delivery_options") is None:
+            return _calls(
+                results,
+                [
+                    (
+                        "get_delivery_options",
+                        {
+                            "retailer_id": context["retailer_id"],
+                            "customer_id": context["customer_id"],
+                        },
+                    )
+                ],
+            )
         if intent == "accept" and offer and "place_order" not in results:
             stock = int(offer.get("stock_qty") or 1)
             qty = _qty_from_text(user_text, context, stock)
@@ -434,19 +447,6 @@ class MockMuse:
                 ],
             )
         if intent == "accept" and offer and "place_order" in results:
-            if _known(context, results, "get_delivery_options") is None:
-                return _calls(
-                    results,
-                    [
-                        (
-                            "get_delivery_options",
-                            {
-                                "retailer_id": context["retailer_id"],
-                                "customer_id": context["customer_id"],
-                            },
-                        )
-                    ],
-                )
             order = results.get("place_order") or {}
             delivery = _known(context, results, "get_delivery_options")
             if order.get("ok"):

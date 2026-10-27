@@ -58,26 +58,28 @@ def test_cancelled_orders_are_not_passed_in_by_the_caller_contract():
 
 def test_local_context_mentions_payday_and_festivals():
     october = " ".join(local_context(date(2026, 10, 27))).lower()
-    assert "payday" in october
     assert "detty december" in october
+    assert "payday window open" not in october
     assert "eid" in " ".join(local_context(date(2026, 5, 27))).lower()
     assert "democracy day" in " ".join(local_context(date(2026, 6, 12))).lower()
     assert "new yam" in " ".join(local_context(date(2026, 8, 15))).lower()
     assert "christmas" in " ".join(local_context(date(2026, 12, 20))).lower()
-    january = " ".join(local_context(date(2026, 1, 15))).lower()
-    assert "payday still coming" in january
-    assert "dey near" not in january
-    assert "don enter" not in january
-    october = " ".join(local_context(date(2026, 10, 27))).lower()
-    assert "payday window open" in october
-    assert "dey near" not in october
-    assert "just open" not in october
+    january = payday_calendar(date(2026, 1, 15))
+    assert january["status"] == "upcoming"
+    assert january["customer_line"]["en"] == "Payday is still coming, a good time to plan ahead."
+    assert "don enter" not in january["customer_line"]["pcm"]
+    october_line = payday_calendar(date(2026, 10, 27))["customer_line"]["pcm"]
+    assert october_line == "Month-end dey this week, e good time to stock up."
+    assert "payday window open" not in october_line
+    assert "dey near" not in october_line
     assert "easter" in " ".join(local_context(date(2026, 4, 5))).lower()
     opened = payday_calendar(date(2026, 10, 27))
     assert opened["status"] == "open"
-    assert opened["phrase"] == "payday window open"
-    assert "dey near" not in opened["instruction"]
-    assert "just open" not in opened["instruction"]
+    assert opened["customer_line"]["en"] == "Month-end is this week, a good time to restock."
+    assert "status is context only" in opened["instruction"]
+    assert payday_calendar(date(2026, 1, 2))["customer_line"]["pcm"] == (
+        "Salary don land for many people, e good time to stock up."
+    )
     assert payday_calendar(date(2026, 10, 27))["today"] == "2026-10-27"
     assert payday_calendar(date(2026, 1, 2))["status"] == "passed"
     assert payday_calendar(date(2026, 1, 15))["status"] == "upcoming"

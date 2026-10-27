@@ -1,4 +1,8 @@
-"""Retailer-facing totals. Win-back rate is accepted offers divided by offers sent."""
+"""Retailer-facing totals. Win-back rate is accepted offers divided by offers sent.
+
+An offer that was declined and later accepted is counted only as accepted.
+offers_declined is the number of offers that are still declined.
+"""
 
 from __future__ import annotations
 

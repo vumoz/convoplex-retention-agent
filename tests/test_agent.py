@@ -24,7 +24,8 @@ def test_pidgin_winback_and_accept_places_order(shop, log_path):
     assert "dey" in win.message.lower()
     assert "₦70,200" in win.message
     assert "Chinedu" in win.message
-    assert "payday" in win.message.lower()
+    assert "Month-end dey this week, e good time to stock up." in win.message
+    assert "payday window open" not in win.message.lower()
     assert "don enter" not in win.message.lower()
     assert win.tool_trace == ["check_stock", "get_price", "create_offer"]
     assert win.offer["offer_price_ngn"] == 70200
@@ -137,8 +138,8 @@ def test_decline_then_question_then_accept_keeps_the_offer(shop, log_path):
     llm = MockMuse()
     win = draft_winback(shop, log, llm, 1, max_tokens=1000)
     assert win.offer["offer_price_ngn"] == 70200
-    assert "Payday window open." in win.message
-    assert "dey near" not in win.message.lower()
+    assert "Month-end dey this week, e good time to stock up." in win.message
+    assert "payday window open" not in win.message.lower()
 
     decline = handle_reply(shop, log, llm, 1, "No thank you, maybe next month", max_tokens=1000)
     assert decline.intent == "decline"
@@ -168,7 +169,7 @@ def test_decline_then_question_then_accept_keeps_the_offer(shop, log_path):
     assert "how you dey" not in accept.message.lower()
     assert "check_stock" not in accept.tool_trace
     assert "get_price" not in accept.tool_trace
-    assert "get_delivery_options" in accept.tool_trace
+    assert accept.tool_trace.index("get_delivery_options") < accept.tool_trace.index("place_order")
     status = shop.execute("SELECT status FROM offers").fetchone()["status"]
     assert status == "accepted"
     totals = snapshot(shop, log.read_all())
@@ -189,7 +190,8 @@ def test_language_override_and_prompt_guardrails(shop, log_path):
     system = build_messages(shop, 1, "winback")[0]["content"]
     assert "tank you" in system
     assert "get_delivery_options" in system
-    assert "don enter" in system
+    assert "Month-end dey this week, e good time to stock up." in system
+    assert "payday window open" not in system
     assert "CONTEXT_JSON:" in system
     context = system.split("CONTEXT_JSON:\n", 1)[1]
     assert '"today": "2026-10-27"' in context

@@ -15,7 +15,7 @@ This build is the core, end to end, on synthetic data:
 - 500 fictional customers across six shops, with orders from 27 Apr 2026 to 26 Oct 2026. Scores use a scenario date of 27 Oct 2026 so the demo does not drift after the event.
 - RFM-style lapse scoring with a written reason for every customer.
 - A Muse Spark tool loop: `check_stock`, `get_price`, `create_offer`, `place_order`, and `get_delivery_options` (synthetic pickup and a 1–2 day same-city window). The model is told not to invent a delivery weekday.
-- Messages mention one payday phrase for the scenario date (`payday window open` on 27 Oct, not a second line such as "payday dey near") and festive seasons when those notes apply. Payday is only in the first win-back, not in a decline.
+- The payday state stays in context. The first win-back writes one natural sentence in the customer's language (on 27 Oct, Pidgin "Month-end dey this week, e good time to stock up."). The raw state is not pasted into the message. A decline does not mention payday. Festive notes are included when they apply.
 - An append-only hash-chained action log, with a verify command.
 - A FastAPI backend for the at-risk list, win-back, replies, metrics, and the log.
 
@@ -84,7 +84,7 @@ python -m convoplex serve
 
 `demo` leaves an existing database in place and appends to the action log. `demo --reset` and `generate` write a fresh database and delete the action log, because the old chain would describe a database that no longer exists. With no extra flags the demo picks a lapsed customer who prefers Pidgin, drafts an offer, accepts it with "Yes o, no wahala. Abeg send am today.", places the order, and verifies the action log.
 
-A declined offer stays valid while the product is in stock. A later question quotes the offer price, and a later accept charges that price even if the model omits `offer_id`. Follow-up replies do not greet again. The agent reuses stock and price results already in the thread, and a confirmation includes pickup and delivery from `get_delivery_options`.
+A declined offer stays valid while the product is in stock. A later question quotes the offer price, and a later accept charges that price even if the model omits `offer_id`. Once that offer is accepted it counts as accepted: `offers_declined` only includes offers that are still declined. Follow-up replies do not greet again. The agent reuses stock and price results already in the thread. On acceptance it calls `get_delivery_options` before `place_order`, and the confirmation offers pickup or delivery.
 
 To show a decline, a question, or an accept for one customer:
 
@@ -104,7 +104,7 @@ API (after `serve`, default `http://127.0.0.1:8000`):
 - `GET /v1/customers/{id}`
 - `POST /v1/customers/{id}/winback`
 - `POST /v1/customers/{id}/reply` with `{"text": "..."}`
-- `GET /v1/metrics` — win-back rate (accepted ÷ sent), naira recovered, offers sent, plus token totals and latency summed from `model_call` log entries (`prompt_tokens`, `completion_tokens`, `reasoning_tokens`, `total_tokens`, `model_calls`, `model_latency_ms`)
+- `GET /v1/metrics` — win-back rate (accepted ÷ sent), naira recovered, offers sent, plus token totals and latency summed from `model_call` log entries (`prompt_tokens`, `completion_tokens`, `reasoning_tokens`, `total_tokens`, `model_calls`, `model_latency_ms`). A declined offer that is later accepted moves to `offers_accepted`. `offers_declined` does not include it.
 - `GET /v1/actions` and `POST /v1/actions/verify`
 - `POST /v1/voice/transcribe` — stub, validates multipart audio
 - `POST /v1/offers/{id}/promo-card` — stub, returns the image request it would send

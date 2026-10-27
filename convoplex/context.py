@@ -12,29 +12,33 @@ AT_RISK_SEGMENTS = ("at_risk", "lapsed")
 
 
 def payday_calendar(as_of: date) -> dict:
-    """One payday phrase for the scenario date. Do not offer a second wording.
+    """Payday as context, plus one natural sentence per language.
 
-    The window is the 25th through the 3rd. On the 27th the state is only
-    "payday window open". It is too early to say salary has already entered.
+    status is for the agent only. Customer copy comes from customer_line.
+    The window is the 25th through the 3rd. On the 27th salary has not
+    necessarily landed, so the sentence does not say that it has.
     """
     today = as_of.isoformat()
     if as_of.day <= 3:
-        phrase = "payday just passed"
-        extra = " You may add that salary don enter for many people, not for everyone."
+        status = "passed"
+        pcm = "Salary don land for many people, e good time to stock up."
+        en = "Salary has landed for many people, a good time to restock."
     elif as_of.day >= 25:
-        phrase = "payday window open"
-        extra = " Do not write that salary don enter or has already been paid."
+        status = "open"
+        pcm = "Month-end dey this week, e good time to stock up."
+        en = "Month-end is this week, a good time to restock."
     else:
-        phrase = "payday still coming"
-        extra = " Do not write that salary don enter or has already been paid."
+        status = "upcoming"
+        pcm = "Payday still dey come, e good time to plan am."
+        en = "Payday is still coming, a good time to plan ahead."
     return {
         "today": today,
-        "status": "passed" if as_of.day <= 3 else "open" if as_of.day >= 25 else "upcoming",
-        "phrase": phrase,
+        "status": status,
+        "customer_line": {"pcm": pcm, "en": en},
         "instruction": (
-            f"Today is {today}. Payday state is exactly '{phrase}'. "
-            "If you mention payday, use that phrase and no other payday wording."
-            f"{extra} Mention payday only in the first win-back, never in a decline."
+            f"Today is {today}. status is context only. Never write the status value in the message. "
+            "In the first win-back only, write payday.customer_line for the customer's language, "
+            "as one natural sentence. Do not mention payday in a decline."
         ),
     }
 
@@ -42,7 +46,6 @@ def payday_calendar(as_of: date) -> dict:
 def local_context(as_of: date) -> list[str]:
     """Payday and festive notes a Lagos shop would actually use in a message."""
     notes: list[str] = []
-    notes.append(payday_calendar(as_of)["phrase"])
     if as_of.month == 4 and as_of.day <= 12:
         notes.append("Easter season: family visits lift provisions and outfits.")
     if as_of.month == 5 and as_of.day >= 20:

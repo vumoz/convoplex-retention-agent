@@ -15,9 +15,11 @@ def _first(full_name: str) -> str:
 
 
 def _payday_note(ctx: dict) -> str:
-    phrase = (ctx.get("payday") or {}).get("phrase")
-    if phrase:
-        return f" {phrase[0].upper() + phrase[1:]}."
+    lines = (ctx.get("payday") or {}).get("customer_line") or {}
+    language = "pcm" if ctx.get("language") == "pcm" else "en"
+    sentence = lines.get(language)
+    if sentence:
+        return f" {sentence}"
     return ""
 
 
@@ -30,12 +32,12 @@ def delivery_sentence(ctx: dict, delivery: dict | None) -> str:
     if pickup and pickup.get("available") and rider and rider.get("available"):
         if pidgin:
             return (
-                f"Pickup na {pickup.get('window')} for {pickup.get('where')}. "
-                f"Delivery na {rider.get('window')} for {rider.get('where')}."
+                f"You fit choose pickup ({pickup.get('window')} for {pickup.get('where')}) "
+                f"or delivery ({rider.get('window')} for {rider.get('where')})."
             )
         return (
-            f"Pickup is {pickup.get('window')} at {pickup.get('where')}. "
-            f"Delivery is {rider.get('window')} in {rider.get('where')}."
+            f"You can choose pickup ({pickup.get('window')} at {pickup.get('where')}) "
+            f"or delivery ({rider.get('window')} in {rider.get('where')})."
         )
     if pickup and pickup.get("available") and rider and not rider.get("available"):
         if pidgin:

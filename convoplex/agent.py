@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 
 from convoplex.actionlog import ActionLog
 from convoplex.context import agent_context
-from convoplex.llm import Completion, LLMError, classify_reply, split_intent
+from convoplex.llm import Completion, LLMError, ToolCall, classify_reply, split_intent
 from convoplex.messages import accept_message, decline_message, delivery_sentence, question_message, winback_message
 from convoplex.money import naira
 from convoplex.prompts import build_messages
@@ -135,6 +135,9 @@ def _run(
             _log_model_calls(log, getattr(exc, "calls", None), customer_id, task)
             raise
         _log_model_calls(log, completion.calls, customer_id, task)
+        calls = _delivery_before_order(completion.tool_calls, delivery, profile, customer_id)
+        if calls is not completion.tool_calls:
+            completion.tool_calls = calls
         messages.append(completion.assistant_message())
         if completion.content and not completion.tool_calls:
             break
@@ -193,12 +196,11 @@ def _run(
         intent = classify_reply(user_text)
 
     if task == "reply" and intent == "accept" and order is None and profile.get("open_offer"):
+        if not delivery:
+            delivery = _required_delivery(conn, log, customer_id, profile, trace)
         order = _fallback_place(conn, log, customer_id, profile, trace, user_text or "")
         if order and order.get("ok"):
             intent = "accept"
-
-    if task == "reply" and intent == "accept" and order and order.get("ok") and not delivery:
-        delivery = _required_delivery(conn, log, customer_id, profile, trace)
 
     if task == "reply":
         text = _strip_thread_greeting(text, profile.get("retailer_name") or "")
@@ -312,6 +314,28 @@ def _strip_thread_greeting(text: str, shop_name: str) -> str:
             continue
         kept.append(sentence)
     return " ".join(kept).strip() or text
+
+
+def _delivery_before_order(calls: list, delivery: dict | None, profile: dict, customer_id: int) -> list:
+    """Look up pickup and delivery before place_order runs."""
+    if not calls or delivery:
+        return calls
+    names = [call.name for call in calls]
+    if "place_order" not in names:
+        return calls
+    ordered = list(calls)
+    if "get_delivery_options" not in names:
+        ordered.insert(
+            0,
+            ToolCall(
+                id="call_required_delivery",
+                name="get_delivery_options",
+                arguments={"retailer_id": profile["retailer_id"], "customer_id": customer_id},
+            ),
+        )
+    else:
+        ordered.sort(key=lambda call: (call.name != "get_delivery_options", call.name == "place_order"))
+    return ordered
 
 
 def _states_arrival(text: str) -> bool:
