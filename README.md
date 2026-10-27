@@ -21,8 +21,9 @@ This build is the core, end to end, on synthetic data:
 - Voice-note replies. OGG/Opus is converted to mono 16-bit WAV, transcribed, and fed through the same decline / price question / accept path as a typed reply. The action log stores the transcript, latency, and model.
 - Promo cards. `muse-image-1.0` draws a text-free product photo. Pillow then prints the shop, the product, the naira prices, and the percent off, so the numbers match the offer.
 - A single-page dashboard for the three-minute demo: customers by shop, the thread, a reply box, a voice-note upload, the promo card, metrics, and the action log with a verify button.
+- WhatsApp as a real channel on the Cloud API test number. The simulator stays the default. Live sends go only to one allow-listed phone.
 
-The WhatsApp Cloud API is still a stub. The webhook can verify and parse. Nothing is sent.
+The fictional customer numbers are never dialled. When the channel is WhatsApp, every outbound message is redirected to `WHATSAPP_DEMO_TO` and the action log stores the synthetic customer id with the demo number masked to its last two digits.
 
 ## Meta models
 
@@ -50,12 +51,13 @@ flowchart LR
   image --> card[Pillow overlay]
   agent --> log[Hash-chained JSONL]
   api --> dash[Dashboard]
-  api --> wa[WhatsApp stub]
+  api --> wa[WhatsApp Cloud API]
+  wa --> demo[Allow-listed demo phone]
 ```
 
 Scoring rules, in short: cadence is the median gap between orders, capped at 45 days. Repeat customers still inside 35 days and 1.25× cadence are active. Quiet up to 60 days and within 2× cadence are at risk. Beyond that, up to 120 days, they are lapsed. Longer than 120 days is lost. The priority score weights lapse more heavily than raw spend, and every score comes with the numbers that produced it.
 
-Offers are 5 to 15 percent off the database price. The model cannot name its own price. `place_order` caps quantity at the shelf and at 10 units per order. Accepting an offer places a `whatsapp_sim` order. That label means the conversation was simulated. This build does not send a WhatsApp message.
+Offers are 5 to 15 percent off the database price. The model cannot name its own price. `place_order` caps quantity at the shelf and at 10 units per order. Accepting an offer places a `whatsapp_sim` order. That label is the synthetic shop sale. It is not a WhatsApp catalog order. A live WhatsApp send, when the channel is on, is a separate Cloud API call to the demo phone.
 
 ## Synthetic data
 
@@ -87,6 +89,9 @@ python -m convoplex generate
 python -m convoplex demo
 python -m convoplex verify
 python -m convoplex serve
+python -m convoplex whatsapp check
+python -m convoplex whatsapp send-template
+python -m convoplex serve --channel whatsapp --tunnel
 ```
 
 `serve` is the dashboard. Open `http://127.0.0.1:8000/`. The page lists at-risk and lapsed customers by shop, with the written lapse reason. Send a win-back, reply in the box, or upload an OGG or WAV voice note. Generate the promo card for the offer. Metrics and the action log sit on the same page. **Verify chain** reports pass or fail. **Reset demo** asks once to confirm, then rebuilds the synthetic database, deletes the action log, and removes promo cards. Offer ids start again at 1, so old cards are cleared with the database.
@@ -136,7 +141,12 @@ API (after `serve`, default `http://127.0.0.1:8000`):
 - `GET /v1/actions` and `POST /v1/actions/verify`
 - `POST /v1/demo/reset` — regenerates the 500-customer synthetic database, deletes the action log, and deletes promo cards
 - `GET /` — the dashboard
-- `GET` and `POST /v1/whatsapp/webhook` — handshake and parse only; nothing is sent
+- `GET /v1/whatsapp/status` — channel, missing env names, 24-hour window, last delivery status, masked demo number
+- `POST /v1/whatsapp/channel` with `{"channel": "simulator"}` or `{"channel": "whatsapp"}`
+- `POST /v1/whatsapp/customer` with `{"customer_id": 184}` — inbound messages from the demo phone map to this customer
+- `POST /v1/customers/{id}/whatsapp` — send the win-back to the demo phone, or `hello_world` if the 24-hour window is closed
+- `POST /v1/offers/{id}/whatsapp` — upload the promo card and send it, or send `hello_world` if the window is closed
+- `GET` and `POST /v1/whatsapp/webhook` — Meta handshake, inbound text and audio, delivery ticks. The access token is never logged.
 
 Interactive docs: `http://127.0.0.1:8000/docs`.
 
@@ -185,11 +195,63 @@ The voice upstream is `POST https://api.meta.ai/v1/asr/transcribe`. The image up
 
 Each line of `data/actions.jsonl` is one message, tool event, or model call. `hash` is SHA-256 over the rest of the entry, including `prev_hash`. The first `prev_hash` is 64 zeroes. `python -m convoplex verify` recomputes the chain and exits non-zero on the first break. The writer only appends. A `model_call` entry stores `latency_ms`, `finish_reason`, the `max_tokens` sent, the attempt number (1, or 2 after a length retry), and token usage.
 
-## What is stubbed
+## WhatsApp Cloud API
 
-WhatsApp Cloud API. GET verifies `hub.challenge` when `WHATSAPP_VERIFY_TOKEN` is set. POST parses text and audio messages and does not reply. `build_send_text_request` documents the Graph API call for a later day. Test sends, when they exist, must go only to the builder's own numbers. Those numbers are not in this repo.
+The simulator is the default. Nothing is sent unless `CONVOPLEX_CHANNEL=whatsapp` (or `serve --channel whatsapp`, or the dashboard switch **WhatsApp live**) and the recipient is `WHATSAPP_DEMO_TO`. That number is your own phone. Put it in the shell, not in git. Synthetic customers keep their fictional numbers on screen. The demo phone plays the customer.
 
-Voice notes and promo cards are not stubs. Mock mode does not use the network. Live mode is the calls above, and it has not been executed in this environment because `META_API_KEY` is not available here.
+Outside the 24-hour customer service window, WhatsApp only accepts an approved template. Convoplex sends the test-number template `hello_world` (`en_US`) and says so on the dashboard. After the demo phone messages in, free-form text and the promo card can go out. The card is uploaded as JPEG (`POST /{phone_number_id}/media`) and sent as an image with a caption. Inbound text and voice notes from that phone run through the same reply flow, and the agent's answer is sent back. Voice notes are downloaded with `GET /{media_id}` and then the media URL, both with the bearer token, and transcribed with the existing voice path.
+
+Config, all from the environment:
+
+| Variable | Role |
+| --- | --- |
+| `WHATSAPP_TOKEN` | Cloud API access token. Never logged, never committed. `WHATSAPP_ACCESS_TOKEN` is still read if `WHATSAPP_TOKEN` is unset. |
+| `WHATSAPP_PHONE_NUMBER_ID` | The test number's phone number id. |
+| `WHATSAPP_VERIFY_TOKEN` | You choose this. Meta sends it back on the webhook handshake. |
+| `WHATSAPP_APP_SECRET` | Optional. When set, `POST /v1/whatsapp/webhook` must carry a valid `X-Hub-Signature-256`. |
+| `WHATSAPP_DEMO_TO` | The only recipient. Country code, plus sign optional. Same digits WhatsApp puts in `from`. |
+| `GRAPH_API_VERSION` | Optional, default `v21.0`. |
+| `CONVOPLEX_CHANNEL` | `simulator` (default) or `whatsapp`. |
+
+Graph base: `https://graph.facebook.com/{version}/{phone_number_id}/messages`.
+
+Setup, then a live check that prints the display number and quality and does not print the token:
+
+```bash
+export WHATSAPP_TOKEN=your_token
+export WHATSAPP_PHONE_NUMBER_ID=your_phone_number_id
+export WHATSAPP_VERIFY_TOKEN=a_string_you_choose
+export WHATSAPP_DEMO_TO=2348012345678
+export WHATSAPP_APP_SECRET=your_app_secret   # optional, recommended
+export CONVOPLEX_CHANNEL=whatsapp
+python -m convoplex whatsapp check
+python -m convoplex whatsapp customer 184
+python -m convoplex whatsapp send-template
+```
+
+`whatsapp customer 184` maps inbound messages to that synthetic customer. The dashboard does the same thing when you select a customer. If nothing is selected and customer 184 exists, inbound messages use 184.
+
+Expose the webhook with a Cloudflare quick tunnel. Subscribe to the `messages` field. The command prints the callback URL and the verify token to paste into the Meta app. It does not print the access token.
+
+```bash
+python -m convoplex serve --channel whatsapp --tunnel
+```
+
+If `cloudflared` is not installed, the process still serves on `127.0.0.1:8000` and prints:
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:8000
+```
+
+Paste `https://<host>.trycloudflare.com/v1/whatsapp/webhook` as the callback URL. Meta cannot call `127.0.0.1`.
+
+On the dashboard, **Simulator / WhatsApp live** shows whether env is missing, whether the 24-hour window is open, and the last status (`sent`, `delivered`, `read`). **Send on WhatsApp** on the win-back and on the promo card delivers to the masked demo number. Ticks on a shop bubble come from status webhooks. The demo number is shown as the last two digits only.
+
+Tests never call Graph. They use a fake transport. `pytest` covers request shapes, the allow-list, signature checks, dedupe, the 24-hour window, and inbound text and audio.
+
+## What was not run live
+
+Voice, image, and WhatsApp live calls were not executed in this environment. `META_API_KEY` and the WhatsApp secrets are not available here. Mock mode and the fake Graph transport cover the offline path. The live commands above are what to run on a machine that has the keys and a test number.
 
 ## Contributors
 

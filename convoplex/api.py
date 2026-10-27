@@ -1,16 +1,16 @@
 """FastAPI surface for the retention agent.
 
-Voice notes and promo cards run here. The WhatsApp webhook still only
-verifies and parses. Sending is not enabled.
+Voice notes and promo cards run here. WhatsApp sends stay off until the
+channel is whatsapp and the recipient is the allow-listed demo phone.
 """
 
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -29,10 +29,28 @@ from convoplex.integrations.images import (
     save_promo_image,
 )
 from convoplex.integrations.voice import VoiceError, transcribe_audio
-from convoplex.integrations.whatsapp import parse_inbound, verify_subscription
+from convoplex.integrations.whatsapp import (
+    SendBlocked,
+    WhatsAppError,
+    normalize_phone,
+    parse_inbound,
+    parse_statuses,
+    signature_matches,
+    verify_subscription,
+)
 from convoplex.llm import LLMError, LiveMuse, MockMuse
 from convoplex.metrics import snapshot
 from convoplex.synthetic.generate import DEFAULT_CUSTOMERS, DEFAULT_SEED, generate
+from convoplex.whatsapp_flow import (
+    process_messages,
+    record_statuses,
+    send_promo,
+    send_winback,
+    set_demo_customer,
+    status_view,
+    store_for,
+)
+from convoplex.whatsapp_state import stamp_from_message
 
 DASHBOARD = Path(__file__).resolve().parent / "static" / "dashboard.html"
 MAX_AUDIO_BYTES = 20 * 1024 * 1024
@@ -40,6 +58,14 @@ MAX_AUDIO_BYTES = 20 * 1024 * 1024
 
 class ReplyIn(BaseModel):
     text: str = Field(min_length=1, max_length=2000)
+
+
+class ChannelIn(BaseModel):
+    channel: str = Field(pattern="^(simulator|whatsapp)$")
+
+
+class DemoCustomerIn(BaseModel):
+    customer_id: int = Field(ge=1)
 
 
 def build_llm(settings: Settings):
@@ -71,13 +97,17 @@ def create_app(settings: Settings | None = None, *, generate_if_missing: bool = 
             "Synthetic-data agent built during the Meta AI Developer Hackathon, "
             "27 Oct to 4 Nov 2026. Muse Spark drafts WhatsApp-style win-backs. "
             "Voice notes are transcribed and promo cards are drawn locally over a "
-            "text-free product image. WhatsApp delivery is stubbed."
+            "text-free product image. WhatsApp delivery uses the Cloud API test "
+            "number only when the channel is whatsapp and the recipient is the "
+            "allow-listed demo phone."
         ),
     )
     app.state.settings = settings
+    app.state.channel = settings.channel
     app.state.log = ActionLog(settings.log_path)
     app.state.llm = build_llm(settings)
     app.state.http_client = None
+    app.state.whatsapp_http = None
 
     def get_settings(request: Request) -> Settings:
         return request.app.state.settings
@@ -115,6 +145,7 @@ def create_app(settings: Settings | None = None, *, generate_if_missing: bool = 
             "synthetic": True,
             "label": label,
             "dashboard": True,
+            "channel": app.state.channel,
         }
 
     @app.get("/v1/retailers")
@@ -160,7 +191,11 @@ def create_app(settings: Settings | None = None, *, generate_if_missing: bool = 
         return {
             "customer_id": customer_id,
             "customer": _public(row),
-            "messages": _thread_messages(app.state.log.read_all(), customer_id),
+            "messages": _thread_messages(
+                app.state.log.read_all(),
+                customer_id,
+                store_for(settings).statuses(),
+            ),
             "offer": _latest_offer(conn, customer_id),
             "order": _latest_offer_order(conn, customer_id),
             "synthetic": True,
@@ -219,6 +254,7 @@ def create_app(settings: Settings | None = None, *, generate_if_missing: bool = 
         if settings.log_path.exists():
             settings.log_path.unlink()
         clear_promo_cards(settings.output_dir)
+        store_for(settings).reset()
         return {
             "ok": True,
             "synthetic": True,
@@ -226,6 +262,62 @@ def create_app(settings: Settings | None = None, *, generate_if_missing: bool = 
             "customers": DEFAULT_CUSTOMERS,
             "seed": DEFAULT_SEED,
         }
+
+    @app.get("/v1/whatsapp/status")
+    def whatsapp_status():
+        return status_view(settings, app.state.channel, store_for(settings))
+
+    @app.post("/v1/whatsapp/channel")
+    def whatsapp_channel(body: ChannelIn):
+        app.state.channel = body.channel
+        app.state.settings = settings.with_channel(body.channel)
+        return status_view(app.state.settings, app.state.channel, store_for(app.state.settings))
+
+    @app.post("/v1/whatsapp/customer")
+    def whatsapp_customer(body: DemoCustomerIn):
+        try:
+            set_demo_customer(app.state.settings, body.customer_id)
+        except LookupError:
+            raise HTTPException(404, "customer not found") from None
+        return status_view(app.state.settings, app.state.channel, store_for(app.state.settings))
+
+    @app.post("/v1/customers/{customer_id}/whatsapp")
+    def whatsapp_winback(customer_id: int):
+        try:
+            return send_winback(
+                app.state.settings,
+                app.state.channel,
+                app.state.log,
+                app.state.llm,
+                store_for(app.state.settings),
+                app.state.whatsapp_http,
+                customer_id,
+                max_tokens=app.state.settings.max_tokens,
+            )
+        except LookupError:
+            raise HTTPException(404, "customer not found") from None
+        except SendBlocked as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except (WhatsAppError, LLMError) as exc:
+            raise HTTPException(502, str(exc)) from exc
+
+    @app.post("/v1/offers/{offer_id}/whatsapp")
+    def whatsapp_promo(offer_id: int):
+        try:
+            return send_promo(
+                app.state.settings,
+                app.state.channel,
+                app.state.log,
+                store_for(app.state.settings),
+                app.state.whatsapp_http,
+                offer_id,
+            )
+        except LookupError:
+            raise HTTPException(404, "offer not found") from None
+        except SendBlocked as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except WhatsAppError as exc:
+            raise HTTPException(409 if "Generate the promo card" in str(exc) else 502, str(exc)) from exc
 
     @app.get("/v1/whatsapp/webhook")
     def whatsapp_verify(
@@ -238,8 +330,8 @@ def create_app(settings: Settings | None = None, *, generate_if_missing: bool = 
             return JSONResponse(
                 status_code=501,
                 content={
-                    "status": "stub",
-                    "message": "Set WHATSAPP_VERIFY_TOKEN to practise the Cloud API handshake. Sending is not enabled.",
+                    "status": "unconfigured",
+                    "message": "Set WHATSAPP_VERIFY_TOKEN to complete the Cloud API handshake.",
                 },
             )
         challenge = verify_subscription(hub_mode, hub_verify_token, hub_challenge, expected)
@@ -248,29 +340,56 @@ def create_app(settings: Settings | None = None, *, generate_if_missing: bool = 
         return PlainTextResponse(challenge)
 
     @app.post("/v1/whatsapp/webhook")
-    async def whatsapp_receive(request: Request):
+    async def whatsapp_receive(request: Request, background: BackgroundTasks):
+        current = request.app.state.settings
+        raw = await request.body()
+        if not signature_matches(raw, request.headers.get("x-hub-signature-256"), current.whatsapp_app_secret):
+            raise HTTPException(403, "invalid signature")
         try:
-            payload = await request.json()
+            payload = json.loads(raw)
         except json.JSONDecodeError:
             raise HTTPException(400, "webhook body must be JSON") from None
         if not isinstance(payload, dict):
             raise HTTPException(400, "webhook body must be a JSON object")
-        inbound = parse_inbound(payload)
+        store = store_for(current)
+        status_count = record_statuses(current, app.state.log, store, parse_statuses(payload))
+        demo = normalize_phone(current.whatsapp_demo_to)
+        accepted: list[InboundMessage] = []
+        duplicates: list[str] = []
+        ignored = 0
+        moment = datetime.now(timezone.utc)
+        for item in parse_inbound(payload):
+            if not item.message_id or normalize_phone(item.from_phone) != demo:
+                ignored += 1
+                continue
+            if item.kind not in {"text", "audio"}:
+                ignored += 1
+                continue
+            if not store.claim(item.message_id):
+                duplicates.append(item.message_id)
+                continue
+            store.note_inbound(stamp_from_message(item.timestamp, moment))
+            accepted.append(item)
+        if accepted:
+            background.add_task(
+                process_messages,
+                current,
+                app.state.channel,
+                app.state.log,
+                app.state.llm,
+                store,
+                accepted,
+                http=app.state.whatsapp_http,
+                asr_http=app.state.http_client,
+                max_tokens=current.max_tokens,
+            )
         return {
-            "status": "stub",
-            "processed": False,
-            "received": len(inbound),
-            "messages": [
-                {
-                    "message_id": item.message_id,
-                    "from": item.from_phone,
-                    "kind": item.kind,
-                    "text": item.text,
-                    "media_id": item.media_id,
-                }
-                for item in inbound
-            ],
-            "message": "Webhook parsed. Live replies and sends are not enabled.",
+            "status": "ok",
+            "processed": bool(accepted),
+            "accepted": [item.message_id for item in accepted],
+            "duplicates": duplicates,
+            "ignored": ignored,
+            "statuses": status_count,
         }
 
     @app.post("/v1/voice/transcribe")
@@ -488,8 +607,24 @@ def _agent_body(result) -> dict:
     }
 
 
-def _thread_messages(entries: list[dict], customer_id: int) -> list[dict]:
-    messages: list[dict] = []
+def _thread_messages(entries: list[dict], customer_id: int, statuses: dict[str, str] | None = None) -> list[dict]:
+    statuses = statuses or {}
+    sends_by_seq: dict[int, dict] = {}
+    loose: list[tuple[int, dict]] = []
+    for entry in entries:
+        payload = entry.get("payload") or {}
+        if entry.get("kind") != "whatsapp_send":
+            continue
+        if int(payload.get("customer_id") or 0) != int(customer_id):
+            continue
+        view = _whatsapp_view(entry, statuses)
+        seq = payload.get("message_seq")
+        if seq:
+            sends_by_seq[int(seq)] = view
+        else:
+            loose.append((int(entry.get("seq") or 0), view))
+
+    messages: list[tuple[int, dict]] = []
     pending: dict | None = None
     for entry in entries:
         payload = entry.get("payload") or {}
@@ -509,6 +644,7 @@ def _thread_messages(entries: list[dict], customer_id: int) -> list[dict]:
         if content == "draft win-back":
             continue
         actor = entry.get("actor")
+        seq = int(entry.get("seq") or 0)
         if actor == "customer":
             item = {
                 "role": "customer",
@@ -522,19 +658,52 @@ def _thread_messages(entries: list[dict], customer_id: int) -> list[dict]:
                     "latency_ms": pending.get("latency_ms"),
                 }
             pending = None
-            messages.append(item)
+            messages.append((seq, item))
         elif actor == "agent" and content:
-            messages.append(
+            item = {
+                "role": "shop",
+                "text": content,
+                "task": payload.get("task"),
+                "intent": payload.get("intent"),
+                "ts": entry.get("ts"),
+                "seq": entry.get("seq"),
+            }
+            attached = sends_by_seq.get(seq)
+            if attached:
+                item["whatsapp"] = attached
+            messages.append((seq, item))
+    for seq, view in loose:
+        messages.append(
+            (
+                seq,
                 {
                     "role": "shop",
-                    "text": content,
-                    "task": payload.get("task"),
-                    "intent": payload.get("intent"),
-                    "ts": entry.get("ts"),
-                    "seq": entry.get("seq"),
-                }
+                    "text": view.get("caption") or view.get("note") or "WhatsApp template hello_world (en_US).",
+                    "ts": view.get("ts"),
+                    "seq": seq,
+                    "whatsapp": view,
+                },
             )
-    return messages
+        )
+    messages.sort(key=lambda item: item[0])
+    return [item for _, item in messages]
+
+
+def _whatsapp_view(entry: dict, statuses: dict[str, str]) -> dict:
+    payload = entry.get("payload") or {}
+    wamid = payload.get("wamid")
+    status = statuses.get(wamid) if wamid else None
+    if status is None:
+        status = payload.get("status")
+    return {
+        "kind": payload.get("kind"),
+        "status": status,
+        "to_masked": payload.get("to_masked"),
+        "wamid": wamid,
+        "note": payload.get("note") or "",
+        "caption": payload.get("caption") or "",
+        "ts": entry.get("ts"),
+    }
 
 
 def _latest_offer(conn, customer_id: int) -> dict | None:

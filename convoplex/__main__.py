@@ -10,6 +10,8 @@ from convoplex.demo import format_demo, run_demo
 from convoplex.integrations.images import clear_promo_cards
 from convoplex.llm import LLMError
 from convoplex.synthetic.generate import DEFAULT_CUSTOMERS, DEFAULT_SEED, generate
+from convoplex.tunnel import callback_url, format_webhook_banner, start_quick_tunnel
+from convoplex.whatsapp_flow import run_check, run_customer, run_send_template, store_for
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -47,9 +49,27 @@ def main(argv: list[str] | None = None) -> int:
     verify_cmd = sub.add_parser("verify", help="Check the hash-chained action log")
     verify_cmd.add_argument("path", nargs="?", default=None)
 
+    whatsapp_cmd = sub.add_parser("whatsapp", help="WhatsApp Cloud API test-number commands")
+    wa_sub = whatsapp_cmd.add_subparsers(dest="wa_cmd", required=True)
+    wa_sub.add_parser("check", help="GET the phone number and print the display number and quality")
+    wa_sub.add_parser("send-template", help="Send the hello_world template to WHATSAPP_DEMO_TO")
+    customer_cmd = wa_sub.add_parser("customer", help="Map inbound WhatsApp messages to a synthetic customer")
+    customer_cmd.add_argument("customer_id", type=int)
+
     serve_cmd = sub.add_parser("serve", help="Run the FastAPI app")
     serve_cmd.add_argument("--host", default="127.0.0.1")
     serve_cmd.add_argument("--port", type=int, default=8000)
+    serve_cmd.add_argument(
+        "--channel",
+        choices=("simulator", "whatsapp"),
+        default=None,
+        help="simulator (default) or whatsapp. Live sends also require WHATSAPP_DEMO_TO.",
+    )
+    serve_cmd.add_argument(
+        "--tunnel",
+        action="store_true",
+        help="Start a cloudflared quick tunnel and print the Meta callback URL.",
+    )
 
     args = parser.parse_args(argv)
     settings = Settings.from_env()
@@ -59,6 +79,7 @@ def main(argv: list[str] | None = None) -> int:
         if settings.log_path.exists():
             settings.log_path.unlink()
         clear_promo_cards(settings.output_dir)
+        store_for(settings).reset()
         print(f"Wrote synthetic database to {path}")
         return 0
 
@@ -96,16 +117,64 @@ def main(argv: list[str] | None = None) -> int:
         print(f"FAIL {result.error}", file=sys.stderr)
         return 1
 
+    if args.cmd == "whatsapp":
+        if args.wa_cmd == "check":
+            return run_check(settings)
+        if args.wa_cmd == "send-template":
+            return run_send_template(settings)
+        if args.wa_cmd == "customer":
+            return run_customer(settings, args.customer_id)
+        parser.error(f"unknown whatsapp command {args.wa_cmd}")
+        return 2
+
     if args.cmd == "serve":
         import uvicorn
 
         from convoplex.api import create_app
 
-        uvicorn.run(create_app(settings), host=args.host, port=args.port)
+        if args.channel:
+            settings = settings.with_channel(args.channel)
+        app = create_app(settings)
+        _announce_webhook(args, settings)
+        uvicorn.run(app, host=args.host, port=args.port)
         return 0
 
     parser.error(f"unknown command {args.cmd}")
     return 2
+
+
+def _announce_webhook(args, settings: Settings) -> None:
+    """Print the callback URL and verify token when WhatsApp or a tunnel is requested."""
+    if settings.channel != "whatsapp" and not args.tunnel:
+        return
+    tunnel = None
+    public = None
+    if args.tunnel:
+        tunnel, public = start_quick_tunnel(args.port)
+    host = "127.0.0.1" if args.host in {"0.0.0.0", "::"} else args.host
+    base = public or f"http://{host}:{args.port}"
+    print(
+        format_webhook_banner(
+            callback=callback_url(base),
+            verify_token=settings.whatsapp_verify_token,
+            public=bool(public),
+        )
+    )
+    if args.tunnel and public is None:
+        if tunnel is None:
+            print("cloudflared is not on PATH. Install it from https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/")
+        else:
+            print("cloudflared did not report a public URL yet. Paste the https origin from its log.")
+    if tunnel is not None:
+        # The tunnel is a child process. uvicorn blocks; stop cloudflared when it returns.
+        import atexit
+
+        atexit.register(_stop_tunnel, tunnel)
+
+
+def _stop_tunnel(proc) -> None:
+    if proc.poll() is None:
+        proc.terminate()
 
 
 if __name__ == "__main__":

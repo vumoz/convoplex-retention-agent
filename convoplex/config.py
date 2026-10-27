@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -14,6 +15,22 @@ DEFAULT_ASR_MODEL = "muse-voice-transcribe-1.0"
 MIN_TOOL_TOKENS = 2500
 
 LLM_MODES = ("auto", "mock", "live")
+CHANNELS = ("simulator", "whatsapp")
+DEFAULT_GRAPH_VERSION = "v21.0"
+
+
+def clean_graph_version(raw: str | None) -> str:
+    version = (raw or DEFAULT_GRAPH_VERSION).strip()
+    if not re.fullmatch(r"v\d+\.\d+", version):
+        raise ValueError("GRAPH_API_VERSION must look like v21.0")
+    return version
+
+
+def clean_channel(raw: str | None) -> str:
+    chosen = (raw or "simulator").strip().lower()
+    if chosen not in CHANNELS:
+        raise ValueError("CONVOPLEX_CHANNEL must be simulator or whatsapp")
+    return chosen
 
 
 def resolve_llm_mode(mode: str | None = None, *, api_key: str | None = None) -> str:
@@ -41,12 +58,19 @@ class Settings:
     max_tokens: int = MIN_TOOL_TOKENS
     meta_api_key: str | None = field(default=None, repr=False)
     whatsapp_verify_token: str | None = field(default=None, repr=False)
-    whatsapp_access_token: str | None = field(default=None, repr=False)
+    whatsapp_token: str | None = field(default=None, repr=False)
     whatsapp_phone_number_id: str | None = None
+    whatsapp_app_secret: str | None = field(default=None, repr=False)
+    whatsapp_demo_to: str | None = field(default=None, repr=False)
+    graph_api_version: str = DEFAULT_GRAPH_VERSION
+    channel: str = "simulator"
 
     def with_llm_mode(self, mode: str) -> Settings:
         resolved = resolve_llm_mode(mode, api_key=self.meta_api_key)
         return replace(self, llm_mode=resolved)
+
+    def with_channel(self, channel: str) -> Settings:
+        return replace(self, channel=clean_channel(channel))
 
     @staticmethod
     def from_env() -> Settings:
@@ -77,7 +101,13 @@ class Settings:
             max_tokens=max_tokens,
             meta_api_key=key,
             whatsapp_verify_token=(os.environ.get("WHATSAPP_VERIFY_TOKEN") or "").strip() or None,
-            whatsapp_access_token=(os.environ.get("WHATSAPP_ACCESS_TOKEN") or "").strip() or None,
-            whatsapp_phone_number_id=(os.environ.get("WHATSAPP_PHONE_NUMBER_ID") or "").strip()
+            whatsapp_token=(
+                os.environ.get("WHATSAPP_TOKEN") or os.environ.get("WHATSAPP_ACCESS_TOKEN") or ""
+            ).strip()
             or None,
+            whatsapp_phone_number_id=(os.environ.get("WHATSAPP_PHONE_NUMBER_ID") or "").strip() or None,
+            whatsapp_app_secret=(os.environ.get("WHATSAPP_APP_SECRET") or "").strip() or None,
+            whatsapp_demo_to=(os.environ.get("WHATSAPP_DEMO_TO") or "").strip() or None,
+            graph_api_version=clean_graph_version(os.environ.get("GRAPH_API_VERSION")),
+            channel=clean_channel(os.environ.get("CONVOPLEX_CHANNEL")),
         )
