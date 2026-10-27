@@ -8,6 +8,8 @@ from convoplex.llm import MockMuse
 
 def test_classify_and_split_intent():
     assert classify_reply("Yes o, no wahala. Abeg send am today.") == "accept"
+    assert classify_reply("Abeg deliver am") == "accept"
+    assert classify_reply("How much be delivery?") == "question"
     assert classify_reply("No thank you, maybe next month") == "decline"
     assert classify_reply("How much be the rice now?") == "question"
     assert classify_reply("ok") == "accept"

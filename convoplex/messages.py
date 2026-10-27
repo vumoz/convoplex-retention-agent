@@ -111,8 +111,40 @@ def delivery_fee_sentence(ctx: dict, delivery: dict | None) -> str:
     return f"The delivery fee is {amount}."
 
 
+def _split_sentences(text: str) -> list[str]:
+    return [piece for piece in re.split(r"(?<=[.!?])\s+", (text or "").strip()) if piece]
+
+
+def _fee_line_language(sentence: str) -> str | None:
+    """A standalone fee announcement, not a longer sentence that mentions the fee."""
+    low = sentence.strip().lower()
+    if re.match(r"^(the )?delivery fee is\b", low):
+        return "en"
+    if re.match(r"^delivery fee na\b", low):
+        return "pcm"
+    return None
+
+
+def _drop_other_language_fee_lines(text: str, ctx: dict) -> str:
+    """Keep fee announcements in the customer's language only."""
+    pidgin = ctx.get("language") == "pcm"
+    kept: list[str] = []
+    seen_fee = False
+    for sentence in _split_sentences(text):
+        kind = _fee_line_language(sentence)
+        if kind == ("en" if pidgin else "pcm"):
+            continue
+        if kind is not None:
+            if seen_fee:
+                continue
+            seen_fee = True
+        kept.append(sentence)
+    return " ".join(kept).strip()
+
+
 def ensure_delivery_fee(text: str, ctx: dict, delivery: dict | None) -> str:
-    """Append the tool's delivery fee when a confirmation forgot it."""
+    """Append the tool's delivery fee once, in the customer's language, when it is missing."""
+    text = _drop_other_language_fee_lines(text, ctx)
     fee = delivery_fee_ngn(delivery)
     if fee is None or naira(fee) in (text or ""):
         return text
@@ -120,6 +152,95 @@ def ensure_delivery_fee(text: str, ctx: dict, delivery: dict | None) -> str:
     if not extra:
         return text
     return f"{(text or '').rstrip()} {extra}".strip()
+
+
+def customer_wants_delivery(user_text: str | None) -> bool:
+    """True when the customer already asked for delivery, as in 'Abeg deliver am'."""
+    low = (user_text or "").lower()
+    if re.search(r"\b(no|don't|do not)\b.{0,20}\bdeliver", low):
+        return False
+    if re.search(r"\b(how much|how many|wetin be|price of)\b", low):
+        return False
+    return re.search(r"\bdeliver", low) is not None
+
+
+def _asks_to_set_delivery(sentence: str) -> bool:
+    low = sentence.lower()
+    return bool(
+        re.search(
+            r"make i set the delivery|make we set (the )?delivery|should i set (the )?delivery|"
+            r"you wan make we deliver|should we deliver",
+            low,
+        )
+    )
+
+
+def _offers_fulfillment_choice(sentence: str) -> bool:
+    low = sentence.lower()
+    choice = "you fit choose" in low or "you can choose" in low
+    return choice and "pickup" in low and "delivery" in low
+
+
+def _confirms_delivery(text: str) -> bool:
+    low = text.lower()
+    return any(
+        phrase in low
+        for phrase in ("we go deliver", "we will deliver", "we don set delivery", "delivery is set")
+    )
+
+
+def _delivery_option(delivery: dict | None) -> dict | None:
+    options = (delivery or {}).get("options") or []
+    rider = next((item for item in options if item.get("method") == "delivery"), None)
+    if not rider or not rider.get("available"):
+        return None
+    return rider
+
+
+def delivery_confirmation(ctx: dict, delivery: dict | None, *, include_fee: bool) -> str:
+    rider = _delivery_option(delivery)
+    if rider is None:
+        return ""
+    window = rider.get("window") or "1 to 2 days"
+    where = rider.get("where") or "your area"
+    fee = delivery_fee_ngn(delivery)
+    if ctx.get("language") == "pcm":
+        line = f"We go deliver am ({window} for {where})."
+        if include_fee and fee is not None:
+            return f"{line} Delivery fee na {naira(fee)}."
+        return line
+    line = f"We will deliver it ({window} in {where})."
+    if include_fee and fee is not None:
+        return f"{line} The delivery fee is {naira(fee)}."
+    return line
+
+
+def polish_acceptance(
+    text: str,
+    ctx: dict,
+    delivery: dict | None,
+    user_text: str | None = None,
+) -> str:
+    """One fee line, in the customer's language, and a confirmation when they already chose delivery."""
+    text = ensure_delivery_fee(text, ctx, delivery)
+    if not customer_wants_delivery(user_text):
+        return text
+    if _delivery_option(delivery) is None:
+        return text
+    kept = [
+        sentence
+        for sentence in _split_sentences(text)
+        if not _asks_to_set_delivery(sentence) and not _offers_fulfillment_choice(sentence)
+    ]
+    text = " ".join(kept).strip()
+    if _confirms_delivery(text):
+        return ensure_delivery_fee(text, ctx, delivery)
+    fee = delivery_fee_ngn(delivery)
+    include_fee = fee is not None and naira(fee) not in text
+    extra = delivery_confirmation(ctx, delivery, include_fee=include_fee)
+    if not extra:
+        return text
+    return f"{text} {extra}".strip() if text else extra
 
 
 def delivery_sentence(ctx: dict, delivery: dict | None) -> str:

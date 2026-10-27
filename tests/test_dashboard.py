@@ -29,6 +29,8 @@ def test_dashboard_page_and_thread(shop, tmp_path):
     assert 'method: "HEAD"' not in html
     assert 'id="voice-label"' in html
     assert "clip: rect(0, 0, 0, 0)" in html
+    assert "An order is already placed in this demo." in html
+    assert "rememberCustomer" in html
 
     missing = client.get("/v1/customers/99/thread")
     assert missing.status_code == 404

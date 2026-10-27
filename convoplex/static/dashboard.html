@@ -481,7 +481,16 @@
       if (segment === "at_risk") return "At risk";
       if (segment === "lapsed") return "Lapsed";
       if (segment === "lost") return "Lost";
+      if (segment === "active") return "Active";
+      if (segment === "new") return "New";
       return segment || "";
+    }
+
+    function rememberCustomer(customer) {
+      if (!customer) return;
+      const index = state.customers.findIndex((row) => row.id === customer.id);
+      if (index === -1) state.customers = [customer, ...state.customers];
+      else state.customers[index] = Object.assign({}, state.customers[index], customer);
     }
 
     async function api(path, options) {
@@ -627,14 +636,20 @@
       reasons.className = "reasons";
       for (const reason of customer.reasons || []) reasons.append(el("li", null, reason));
       copy.append(reasons);
-      const order = state.thread && state.thread.offer && state.thread.order;
+      const order = state.thread && state.thread.order;
       if (order) copy.append(el("p", "order-line", `Order #${order.order_id} · ${naira(order.total_ngn)}`));
       const button = document.createElement("button");
       button.type = "button";
       button.className = "primary";
       button.dataset.action = "winback";
-      button.textContent = state.busy ? "Working…" : "Send win-back";
-      button.disabled = state.busy;
+      if (order) {
+        button.textContent = "Send win-back";
+        button.disabled = true;
+        copy.append(el("p", "fine", "An order is already placed in this demo."));
+      } else {
+        button.textContent = state.busy ? "Working…" : "Send win-back";
+        button.disabled = state.busy;
+      }
       row.append(copy, button);
       host.append(row);
     }
@@ -763,6 +778,7 @@
       if (!state.selected) return;
       state.thread = await api(`/v1/customers/${state.selected.id}/thread`);
       state.selected = state.thread.customer;
+      rememberCustomer(state.selected);
       renderPerson();
       renderThread();
       renderPromo();
@@ -776,6 +792,7 @@
       state.promoError = false;
       state.thread = await api(`/v1/customers/${id}/thread`);
       state.selected = state.thread.customer;
+      rememberCustomer(state.selected);
       setBusy(false);
       renderShops();
       renderPerson();
@@ -784,7 +801,7 @@
     }
 
     async function sendWinback() {
-      if (!state.selected || state.busy) return;
+      if (!state.selected || state.busy || (state.thread && state.thread.order)) return;
       setBusy(true);
       setError("");
       renderPerson();

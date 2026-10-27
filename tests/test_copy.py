@@ -5,6 +5,7 @@ from convoplex.messages import (
     delivery_sentence,
     ensure_delivery_fee,
     one_seasonal_hook,
+    polish_acceptance,
 )
 from convoplex.actionlog import ActionLog
 from convoplex.agent import draft_winback, handle_reply
@@ -97,6 +98,48 @@ def test_delivery_fee_is_stated_in_english_and_pidgin():
     assert ensure_delivery_fee("Total na ₦18,000.", {"language": "pcm"}, OTHER_CITY) == "Total na ₦18,000."
 
 
+def test_fee_line_is_not_repeated_or_mixed_and_delivery_is_confirmed():
+    """The live Pidgin confirmation stacked an English fee line and then asked again."""
+    delivery = {
+        "ok": True,
+        "options": [
+            {
+                "method": "pickup",
+                "available": True,
+                "window": "same day",
+                "fee_ngn": 0,
+                "where": "Wuse Fresh Basket, Wuse",
+            },
+            {
+                "method": "delivery",
+                "available": True,
+                "window": "1 to 2 days",
+                "fee_ngn": 2500,
+                "where": "Abuja",
+            },
+        ],
+    }
+    raw = (
+        "E don set, Chinyere. Total na ₦76,014. "
+        "Delivery fee is ₦2,500. Delivery fee na ₦2,500. Make I set the delivery?"
+    )
+    cleaned = polish_acceptance(raw, {"language": "pcm"}, delivery, "Abeg deliver am")
+    assert "Delivery fee is" not in cleaned
+    assert cleaned.count("₦2,500") == 1
+    assert "Delivery fee na ₦2,500" in cleaned
+    assert "Make I set the delivery" not in cleaned
+    assert "We go deliver am (1 to 2 days for Abuja)." in cleaned
+
+    already = "Total na ₦76,014. Delivery fee na ₦2,500."
+    assert ensure_delivery_fee(already, {"language": "pcm"}, delivery) == already
+
+    english = "Done, Ada. The total is ₦18,000. The delivery fee is ₦2,000. Delivery fee na ₦2,000."
+    english_clean = polish_acceptance(english, {"language": "en"}, SAME_CITY, "")
+    assert "Delivery fee na" not in english_clean
+    assert english_clean.count("₦2,000") == 1
+    assert "The delivery fee is ₦2,000." in english_clean
+
+
 def test_live_style_drafts_keep_one_hook_and_the_fee(shop, log_path):
     """A draft that stacks hooks, or a confirmation that skips the fee, is repaired."""
 
@@ -148,3 +191,17 @@ def test_live_style_drafts_keep_one_hook_and_the_fee(shop, log_path):
     assert "delivery" in reply.message.lower()
     assert "delivery fee na ₦2,500" in reply.message
     assert "₦2,000" not in reply.message
+
+
+def test_deliver_request_confirms_delivery_and_refreshes_segment(shop, log_path):
+    from convoplex.context import get_customer
+
+    log = ActionLog(log_path)
+    draft_winback(shop, log, MockMuse(), 1, max_tokens=1000)
+    reply = handle_reply(shop, log, MockMuse(), 1, "Abeg deliver am", max_tokens=1000)
+    assert reply.intent == "accept"
+    assert "we go deliver am" in reply.message.lower()
+    assert "make i set the delivery" not in reply.message.lower()
+    assert "you fit choose" not in reply.message.lower()
+    assert reply.message.count("₦2,500") == 1
+    assert get_customer(shop, 1)["segment"] == "active"

@@ -15,6 +15,7 @@ from convoplex.messages import (
     decline_message,
     delivery_fee_ngn,
     one_seasonal_hook,
+    polish_acceptance,
     question_message,
     winback_message,
 )
@@ -228,6 +229,7 @@ def _run(
         fee_stated = fee is None or naira(fee) in text
         if naira(int(order["total_ngn"])) not in text or not _states_arrival(text) or not fee_stated:
             text = accept_message(profile, order, delivery)
+        text = polish_acceptance(text, profile, delivery, user_text)
 
     if task == "winback" and offer and offer.get("ok"):
         mark_offer_sent(conn, int(offer["offer_id"]), text, language=profile.get("language"))
