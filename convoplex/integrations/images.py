@@ -394,6 +394,59 @@ def save_promo_image(image: bytes, output_dir: Path | str, offer_id: int) -> Pat
     return path
 
 
+def save_promo_blob(conn, offer_id: int, image: bytes, media_type: str = "image/webp") -> None:
+    """Persist the card in the database. The serverless disk does not keep files."""
+    conn.execute(
+        """
+        INSERT INTO promo_cards (offer_id, image, media_type)
+        VALUES (?, ?, ?)
+        ON CONFLICT(offer_id) DO UPDATE SET
+            image = excluded.image,
+            media_type = excluded.media_type
+        """,
+        (int(offer_id), image, media_type),
+    )
+    conn.commit()
+
+
+def load_promo_blob(conn, offer_id: int) -> bytes | None:
+    row = conn.execute(
+        "SELECT image FROM promo_cards WHERE offer_id = ?",
+        (int(offer_id),),
+    ).fetchone()
+    if row is None or row["image"] is None:
+        return None
+    blob = row["image"]
+    if isinstance(blob, memoryview):
+        return bytes(blob)
+    return bytes(blob)
+
+
+def remember_promo(conn, image: bytes, output_dir: Path | str, offer_id: int) -> Path:
+    """Write the file when the disk allows it, and always store the bytes in the DB."""
+    path = Path(output_dir) / "promo" / promo_filename(offer_id)
+    try:
+        path = save_promo_image(image, output_dir, offer_id)
+    except OSError:
+        pass
+    save_promo_blob(conn, offer_id, image)
+    return path
+
+
+def read_promo_bytes(conn, output_dir: Path | str, offer_id: int) -> bytes | None:
+    path = Path(output_dir) / "promo" / promo_filename(offer_id)
+    if path.is_file():
+        try:
+            data = path.read_bytes()
+            if data:
+                return data
+        except OSError:
+            pass
+    if conn is None:
+        return None
+    return load_promo_blob(conn, offer_id)
+
+
 def clear_promo_cards(output_dir: Path | str) -> None:
     folder = Path(output_dir) / "promo"
     if not folder.exists():

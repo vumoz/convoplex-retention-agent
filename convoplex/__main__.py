@@ -10,7 +10,7 @@ from convoplex.config import Settings
 from convoplex.demo import format_demo, run_demo
 from convoplex.integrations.images import clear_promo_cards
 from convoplex.llm import LLMError
-from convoplex.synthetic.generate import DEFAULT_CUSTOMERS, DEFAULT_SEED, generate
+from convoplex.synthetic.generate import DEFAULT_CUSTOMERS, DEFAULT_SEED, generate, reset_and_seed
 from convoplex.tunnel import callback_url, format_webhook_banner, start_quick_tunnel
 from convoplex.whatsapp_flow import run_check, run_customer, run_send_template, run_winback, store_for
 
@@ -96,6 +96,23 @@ def main(argv: list[str] | None = None) -> int:
     settings = Settings.from_env()
 
     if args.cmd == "generate":
+        if settings.database_url:
+            from convoplex.actionlog import open_action_log
+            from convoplex.db import open_db
+
+            conn = open_db(settings)
+            try:
+                reset_and_seed(conn, postgres=True, n_customers=args.customers, seed=args.seed)
+            finally:
+                conn.close()
+            open_action_log(settings).clear()
+            try:
+                clear_promo_cards(settings.output_dir)
+            except OSError:
+                pass
+            store_for(settings).reset()
+            print("Wrote synthetic database to Postgres")
+            return 0
         path = generate(settings.db_path, n_customers=args.customers, seed=args.seed)
         if settings.log_path.exists():
             settings.log_path.unlink()
@@ -128,10 +145,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if result.log_ok else 1
 
     if args.cmd == "verify":
-        from convoplex.actionlog import ActionLog
+        from convoplex.actionlog import ActionLog, open_action_log
 
-        path = args.path or settings.log_path
-        result = ActionLog(path).verify()
+        if args.path:
+            result = ActionLog(args.path).verify()
+        else:
+            result = open_action_log(settings).verify()
         if result.ok:
             print(f"OK {result.entries} entries")
             return 0
@@ -198,8 +217,17 @@ def _serve_bind(host: str | None, port: int | None) -> tuple[str, int]:
 
 
 def _public_base_url() -> str | None:
+    """PUBLIC_BASE_URL wins. On Vercel, the platform host is the fallback."""
     base = (os.environ.get("PUBLIC_BASE_URL") or "").strip().rstrip("/")
-    return base or None
+    if base:
+        return base
+    for name in ("VERCEL_PROJECT_PRODUCTION_URL", "VERCEL_URL"):
+        host = (os.environ.get(name) or "").strip().rstrip("/")
+        if not host:
+            continue
+        host = host.removeprefix("https://").removeprefix("http://")
+        return "https://" + host
+    return None
 
 
 def _live_app_secret_error(settings: Settings) -> str | None:

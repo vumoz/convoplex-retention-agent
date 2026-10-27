@@ -60,6 +60,54 @@ def generate(
     if path.exists():
         path.unlink()
     conn = init_db(path)
+    try:
+        populate(conn, n_customers=n_customers, seed=seed)
+    finally:
+        conn.close()
+    return path
+
+
+def seed_if_empty(
+    conn,
+    *,
+    n_customers: int = DEFAULT_CUSTOMERS,
+    seed: int = DEFAULT_SEED,
+) -> bool:
+    """Insert the synthetic book when the customers table is empty. Returns True if it did."""
+    row = conn.execute("SELECT COUNT(*) AS n FROM customers").fetchone()
+    if row is not None and int(row["n"]) > 0:
+        return False
+    populate(conn, n_customers=n_customers, seed=seed)
+    return True
+
+
+def reset_and_seed(
+    conn,
+    *,
+    postgres: bool,
+    n_customers: int = DEFAULT_CUSTOMERS,
+    seed: int = DEFAULT_SEED,
+) -> None:
+    """Rebuild the book in place. SQLite local resets delete the file via generate()."""
+    if not postgres:
+        raise RuntimeError("SQLite reset rebuilds the file. Call generate().")
+    conn.execute(
+        "TRUNCATE TABLE order_items, orders, offers, customers, products, retailers, meta "
+        "RESTART IDENTITY CASCADE"
+    )
+    conn.execute("DELETE FROM action_log")
+    conn.execute("DELETE FROM promo_cards")
+    conn.execute("DELETE FROM app_kv")
+    conn.commit()
+    populate(conn, n_customers=n_customers, seed=seed)
+
+
+def populate(
+    conn,
+    *,
+    n_customers: int = DEFAULT_CUSTOMERS,
+    seed: int = DEFAULT_SEED,
+) -> None:
     rng = random.Random(seed)
     plan = archetype_plan(n_customers)
     rng.shuffle(plan)
@@ -178,8 +226,6 @@ def generate(
                         for item, qty in items
                     ],
                 )
-    conn.close()
-    return path
 
 
 def _qty(product: dict, roll: int) -> int:

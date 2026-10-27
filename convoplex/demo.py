@@ -9,21 +9,21 @@ from dataclasses import dataclass
 
 from pathlib import Path
 
-from convoplex.actionlog import ActionLog
+from convoplex.actionlog import ActionLog, open_action_log
 from convoplex.agent import draft_winback, handle_reply
 from convoplex.config import Settings
 from convoplex.context import get_customer, list_at_risk
-from convoplex.db import SYNTHETIC_LABEL, connect, scenario_as_of
+from convoplex.db import SYNTHETIC_LABEL, open_db, scenario_as_of
 from convoplex.integrations.images import (
     build_promo_image,
     clear_promo_cards,
     load_offer_for_card,
-    save_promo_image,
+    remember_promo,
 )
 from convoplex.integrations.voice import transcribe_audio
 from convoplex.llm import LLMError, LiveMuse, MockMuse
 from convoplex.metrics import snapshot
-from convoplex.synthetic.generate import generate
+from convoplex.synthetic.generate import generate, reset_and_seed, seed_if_empty
 
 DEMO_REPLY = "Yes o, no wahala. Abeg send am today."
 
@@ -68,7 +68,21 @@ def run_demo(
     voice_path: str | None = None,
     promo_card: bool = False,
 ) -> DemoResult:
-    if reset_data or not settings.db_path.exists():
+    if settings.database_url:
+        holder = open_db(settings)
+        try:
+            if reset_data:
+                reset_and_seed(holder, postgres=True)
+                open_action_log(settings).clear()
+                try:
+                    clear_promo_cards(settings.output_dir)
+                except OSError:
+                    pass
+            else:
+                seed_if_empty(holder)
+        finally:
+            holder.close()
+    elif reset_data or not settings.db_path.exists():
         generate(settings.db_path)
         if settings.log_path.exists():
             settings.log_path.unlink()
@@ -78,8 +92,8 @@ def run_demo(
         base_url=settings.meta_base_url,
         model=settings.chat_model,
     ) if settings.llm_mode == "live" else MockMuse()
-    log = ActionLog(settings.log_path)
-    conn = connect(settings.db_path)
+    log = open_action_log(settings)
+    conn = open_db(settings)
     try:
         as_of = scenario_as_of(conn)
         if customer_id is None:
@@ -244,7 +258,7 @@ def _write_promo_card(settings: Settings, conn, log: ActionLog, offer_id: int) -
         base_url=settings.meta_base_url,
         model=settings.image_model,
     )
-    path = save_promo_image(card.image, settings.output_dir, offer_id)
+    path = remember_promo(conn, card.image, settings.output_dir, offer_id)
     url = f"/media/promo/{path.name}"
     log.append(
         kind="model_call",

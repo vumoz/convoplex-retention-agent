@@ -17,12 +17,13 @@ from convoplex.actionlog import ActionLog
 from convoplex.agent import draft_winback, handle_reply
 from convoplex.config import Settings
 from convoplex.context import get_customer
-from convoplex.db import connect
+from convoplex.db import open_db
 from convoplex.integrations.images import (
     build_promo_image,
     load_offer_for_card,
     promo_filename,
-    save_promo_image,
+    read_promo_bytes,
+    remember_promo,
 )
 from convoplex.integrations.voice import VoiceError, transcribe_audio
 from convoplex.integrations.whatsapp import (
@@ -51,6 +52,12 @@ FALLBACK_CUSTOMER_ID = 184
 
 
 def store_for(settings: Settings) -> WhatsAppStore:
+    if settings.database_url:
+        return WhatsAppStore(
+            store_path(settings),
+            connect_fn=lambda: open_db(settings),
+            postgres=True,
+        )
     return WhatsAppStore(store_path(settings))
 
 
@@ -153,7 +160,7 @@ def resolve_demo_customer(store: WhatsAppStore, conn) -> int | None:
 
 
 def set_demo_customer(settings: Settings, customer_id: int) -> dict:
-    conn = connect(settings.db_path)
+    conn = open_db(settings)
     try:
         if get_customer(conn, customer_id) is None:
             raise LookupError(f"Unknown customer {customer_id}")
@@ -377,7 +384,7 @@ def send_winback(
     language: str | None = None,
 ) -> dict:
     _ensure_live(settings, channel)
-    conn = connect(settings.db_path)
+    conn = open_db(settings)
     try:
         if get_customer(conn, customer_id) is None:
             raise LookupError(f"Unknown customer {customer_id}")
@@ -412,17 +419,17 @@ def send_promo(
     offer_id: int,
 ) -> dict:
     _ensure_live(settings, channel)
-    conn = connect(settings.db_path)
+    conn = open_db(settings)
     try:
         offer = load_offer_for_card(conn, offer_id)
         if offer is None:
             raise LookupError(f"Unknown offer {offer_id}")
         row = conn.execute("SELECT customer_id FROM offers WHERE id = ?", (offer_id,)).fetchone()
+        image = read_promo_bytes(conn, settings.output_dir, offer_id)
     finally:
         conn.close()
     customer_id = int(row["customer_id"]) if row and row["customer_id"] is not None else None
-    path = settings.output_dir / "promo" / promo_filename(offer_id)
-    if not path.exists():
+    if not image:
         raise WhatsAppError("Generate the promo card before sending it on WhatsApp.")
     caption = f"{offer['product_name']} · {naira(offer['offer_price_ngn'])} · {offer['retailer_name']}"
     return deliver(
@@ -435,7 +442,7 @@ def send_promo(
         message_seq=None,
         kind="image",
         text=caption,
-        image=path.read_bytes(),
+        image=image,
         caption=caption,
     )
 
@@ -535,7 +542,7 @@ def _process_one(
     asr_http: httpx.Client | None,
     max_tokens: int,
 ) -> None:
-    conn = connect(settings.db_path)
+    conn = open_db(settings)
     try:
         customer_id = resolve_demo_customer(store, conn)
         if customer_id is None:
@@ -773,7 +780,7 @@ def _send_promo_card(
     http: httpx.Client | None,
     customer_id: int,
 ) -> dict:
-    conn = connect(settings.db_path)
+    conn = open_db(settings)
     try:
         row = conn.execute(
             "SELECT id FROM offers WHERE customer_id = ? ORDER BY id DESC LIMIT 1",
@@ -783,20 +790,23 @@ def _send_promo_card(
             raise WhatsAppError("There is no offer to put on a promo card.")
         offer_id = int(row["id"])
         offer = load_offer_for_card(conn, offer_id)
+        existing = read_promo_bytes(conn, settings.output_dir, offer_id) if offer else None
+        saved = None
+        card = None
+        if offer is not None and not existing:
+            card = build_promo_image(
+                offer,
+                mode=settings.llm_mode,
+                api_key=settings.meta_api_key,
+                base_url=settings.meta_base_url,
+                model=settings.image_model,
+            )
+            saved = remember_promo(conn, card.image, settings.output_dir, offer_id)
     finally:
         conn.close()
     if offer is None:
         raise WhatsAppError("There is no offer to put on a promo card.")
-    path = settings.output_dir / "promo" / promo_filename(offer_id)
-    if not path.exists():
-        card = build_promo_image(
-            offer,
-            mode=settings.llm_mode,
-            api_key=settings.meta_api_key,
-            base_url=settings.meta_base_url,
-            model=settings.image_model,
-        )
-        saved = save_promo_image(card.image, settings.output_dir, offer_id)
+    if card is not None and saved is not None:
         log.append(
             kind="model_call",
             actor="agent",

@@ -66,6 +66,15 @@
     .where { margin: 0; color: var(--palm-deep); font-size: 14px; }
     .grow { flex: 1; }
     .header-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .admin-form { display: inline-flex; align-items: center; gap: 6px; }
+    .admin-form[hidden] { display: none; }
+    .admin-form input {
+      width: 9.5rem;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 6px 10px;
+      background: #fff;
+    }
     .channel-toggle {
       display: inline-flex;
       border: 1px solid var(--line);
@@ -396,6 +405,12 @@
           <button type="button" data-action="channel" data-channel="whatsapp">WhatsApp live</button>
         </div>
         <span class="pill" id="mode">Mock mode</span>
+        <form id="admin-login" class="admin-form" hidden>
+          <label class="sr" for="admin-token">Admin token</label>
+          <input id="admin-token" type="password" placeholder="Admin token" autocomplete="current-password" />
+          <button type="submit" class="quiet">Unlock</button>
+        </form>
+        <span class="pill" id="admin-state" hidden>Admin</span>
         <button type="button" class="quiet" id="reset" data-action="reset">Reset demo</button>
       </div>
     </header>
@@ -522,7 +537,8 @@
     }
 
     async function api(path, options) {
-      const response = await fetch(path, options);
+      const opts = Object.assign({}, options || {}, {credentials: "same-origin"});
+      const response = await fetch(path, opts);
       const text = await response.text();
       let body = null;
       try { body = text ? JSON.parse(text) : null; } catch { body = {detail: text}; }
@@ -1102,6 +1118,20 @@
       }
     }
 
+    async function refreshAdmin() {
+      try {
+        const session = await api("/v1/admin/session");
+        const form = document.getElementById("admin-login");
+        const badge = document.getElementById("admin-state");
+        const required = Boolean(session && session.required);
+        const admin = Boolean(session && session.admin);
+        form.hidden = !required || admin;
+        badge.hidden = !required || !admin;
+      } catch (err) {
+        // The shop view still loads when the session check fails.
+      }
+    }
+
     async function boot() {
       const [health, retailers, listed, metrics, actions, whatsapp] = await Promise.all([
         api("/health"),
@@ -1140,6 +1170,7 @@
       renderPromo();
       renderLog();
       setBusy(state.busy);
+      await refreshAdmin();
     }
 
     document.getElementById("shops").addEventListener("click", (event) => {
@@ -1178,6 +1209,20 @@
       } else if (action === "reset") {
         resetDemo();
       }
+    });
+
+    document.getElementById("admin-login").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const token = document.getElementById("admin-token").value;
+      api("/v1/admin/login", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({token}),
+      }).then(() => {
+        document.getElementById("admin-token").value = "";
+        setError("");
+        return refreshAdmin();
+      }).catch((err) => setError(err.message));
     });
 
     document.getElementById("composer").addEventListener("submit", (event) => {
