@@ -1,0 +1,853 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Convoplex · Retention</title>
+  <style>
+    :root {
+      --paper: #f3eee4;
+      --card: #fffaf3;
+      --ink: #1c1712;
+      --soft: #6a5f52;
+      --line: #e6d9c6;
+      --palm: #0c6b4d;
+      --palm-deep: #083d2c;
+      --palm-soft: #e7f6ef;
+      --gold: #e2b043;
+      --gold-deep: #8a6412;
+      --clay: #a8482e;
+      --chat: #efe6d4;
+      --out: #d8f5c9;
+      --in: #fffdf9;
+      --shadow: 0 14px 36px rgba(48, 32, 12, 0.08);
+      --radius: 18px;
+      --ui: "Segoe UI", "Noto Sans", "Helvetica Neue", sans-serif;
+      --display: Georgia, "Iowan Old Style", Palatino, serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: var(--ui);
+      background-color: var(--paper);
+      background-image:
+        linear-gradient(30deg, rgba(226, 176, 67, 0.09) 12%, transparent 12.5%, transparent 87%, rgba(226, 176, 67, 0.09) 87.5%),
+        linear-gradient(150deg, rgba(12, 107, 77, 0.06) 12%, transparent 12.5%, transparent 87%, rgba(12, 107, 77, 0.06) 87.5%);
+      background-size: 26px 46px;
+    }
+    button, input, textarea { font: inherit; color: inherit; }
+    button { cursor: pointer; }
+    button:disabled { cursor: wait; opacity: 0.65; }
+    .wrap { max-width: 1120px; margin: 0 auto; padding: 20px 16px 48px; }
+    header.top {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .mark {
+      width: 44px;
+      height: 44px;
+      border-radius: 14px;
+      background:
+        linear-gradient(145deg, var(--palm) 0 55%, var(--gold) 55% 100%);
+      box-shadow: inset 0 0 0 3px rgba(255, 248, 236, 0.35);
+    }
+    .brand h1 {
+      font-family: var(--display);
+      font-size: 28px;
+      line-height: 1;
+      margin: 0;
+      font-weight: 700;
+    }
+    .brand p { margin: 3px 0 0; color: var(--soft); font-size: 13px; }
+    .where { margin: 0; color: var(--palm-deep); font-size: 14px; }
+    .grow { flex: 1; }
+    .header-actions { display: flex; align-items: center; gap: 8px; }
+    .pill, .verdict {
+      border-radius: 999px;
+      padding: 6px 12px;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+    .pill { background: var(--palm-deep); color: #f6f1e6; }
+    .banner {
+      margin: 14px 0 0;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: rgba(255, 250, 243, 0.82);
+      border: 1px solid var(--line);
+      color: var(--soft);
+      font-size: 13px;
+    }
+    .error {
+      margin: 12px 0 0;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: #fde8e2;
+      color: #7c2c16;
+    }
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(8, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 16px;
+    }
+    .metric {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 10px 10px 8px;
+      min-width: 0;
+    }
+    .metric span { display: block; color: var(--soft); font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; }
+    .metric strong { display: block; margin-top: 4px; font-size: 16px; font-variant-numeric: tabular-nums; }
+    .layout {
+      display: grid;
+      grid-template-columns: 340px 1fr;
+      gap: 14px;
+      margin-top: 14px;
+      align-items: start;
+    }
+    .panel {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+    .shop-panel { display: flex; flex-direction: column; min-height: 420px; }
+    .shops { overflow: auto; max-height: calc(100vh - 280px); }
+    .shops-head, .log-head, .person {
+      padding: 14px 14px 10px;
+      border-bottom: 1px solid var(--line);
+    }
+    .shops-head h2, .log-head h2, .person h2 {
+      font-family: var(--display);
+      font-size: 20px;
+      margin: 0;
+    }
+    .filters { display: flex; gap: 6px; margin-top: 10px; }
+    .filters button, .quiet, .upload {
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 13px;
+    }
+    .filters button.on { background: var(--palm); color: white; border-color: var(--palm); }
+    .shop { padding: 8px 8px 12px; }
+    .shop h3 { margin: 8px 8px 0; font-size: 15px; }
+    .shop-meta, .fine, .stamp, .reason, .sub { color: var(--soft); font-size: 12px; }
+    .shop-meta { margin: 2px 8px 6px; }
+    .person-btn {
+      width: 100%;
+      text-align: left;
+      border: 0;
+      background: transparent;
+      border-radius: 12px;
+      padding: 8px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 2px 8px;
+    }
+    .person-btn:hover, .person-btn.selected { background: var(--palm-soft); }
+    .person-btn .name { font-weight: 700; }
+    .person-btn .sub, .person-btn .reason { grid-column: 1 / -1; }
+    .badge {
+      align-self: center;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 11px;
+      font-weight: 700;
+      background: #f6e7c8;
+      color: var(--gold-deep);
+    }
+    .badge.lapsed { background: #f8e1d8; color: var(--clay); }
+    .badge.at_risk { background: #f6e7c8; color: var(--gold-deep); }
+    .conversation { display: flex; flex-direction: column; min-height: 420px; }
+    .person .row { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+    .reasons { margin: 8px 0 0; padding-left: 18px; color: var(--ink); font-size: 13px; }
+    .reasons li { margin: 2px 0; }
+    .primary, #verify, #send {
+      background: var(--palm);
+      color: white;
+      border: 0;
+      border-radius: 999px;
+      padding: 8px 14px;
+      font-weight: 700;
+    }
+    #verify { background: var(--palm-deep); }
+    .thread {
+      background:
+        radial-gradient(circle at 20px 20px, rgba(12, 107, 77, 0.05) 2px, transparent 3px) 0 0 / 22px 22px,
+        var(--chat);
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-height: 260px;
+      max-height: 380px;
+      overflow: auto;
+    }
+    .bubble {
+      max-width: min(82%, 460px);
+      padding: 10px 12px 8px;
+      border-radius: 16px;
+      box-shadow: 0 1px 1px rgba(28, 23, 18, 0.08);
+    }
+    .bubble p { margin: 0; white-space: pre-wrap; line-height: 1.45; }
+    .bubble.shop { margin-left: auto; background: var(--out); border-bottom-right-radius: 5px; }
+    .bubble.customer { margin-right: auto; background: var(--in); border-bottom-left-radius: 5px; }
+    .voice-cap { display: block; font-size: 11px; font-weight: 700; color: var(--palm-deep); margin-bottom: 4px; }
+    .stamp { display: block; margin-top: 6px; text-align: right; }
+    .empty { margin: 8px; color: var(--soft); }
+    .promo {
+      display: grid;
+      grid-template-columns: 1fr 180px;
+      gap: 12px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      align-items: center;
+      background: #fff;
+    }
+    .promo h3 { margin: 0; font-size: 16px; }
+    .promo-price { margin: 4px 0; font-weight: 700; }
+    .promo img {
+      width: 180px;
+      height: 180px;
+      object-fit: cover;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: var(--palm-deep);
+    }
+    #promo .primary { margin-top: 8px; }
+    .composer {
+      display: flex;
+      gap: 8px;
+      padding: 12px;
+      border-top: 1px solid var(--line);
+      align-items: flex-end;
+    }
+    textarea {
+      flex: 1;
+      resize: vertical;
+      min-height: 46px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      padding: 10px 12px;
+      background: #fff;
+    }
+    .upload { display: inline-flex; align-items: center; }
+    .upload input { width: 150px; font-size: 12px; }
+    .log { margin-top: 14px; }
+    .log-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .log-head h2 { margin-right: auto; }
+    .verdict.pass { background: var(--palm-soft); color: var(--palm-deep); }
+    .verdict.fail { background: #fde8e2; color: #7c2c16; }
+    .entries { max-height: 280px; overflow: auto; padding: 8px 12px 14px; }
+    details {
+      border-bottom: 1px solid var(--line);
+      padding: 8px 0;
+    }
+    summary { cursor: pointer; font-size: 14px; }
+    pre {
+      margin: 8px 0 0;
+      padding: 10px;
+      overflow: auto;
+      background: #1c1712;
+      color: #f6f1e6;
+      border-radius: 10px;
+      font-size: 12px;
+    }
+    .order-line { margin: 6px 0 0; font-weight: 700; color: var(--palm-deep); }
+    @media (max-width: 980px) {
+      .metrics { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      .layout { grid-template-columns: 1fr; }
+      .shop-panel { min-height: 0; }
+      .shops { max-height: 46vh; }
+    }
+    @media (max-width: 640px) {
+      .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .composer, .person .row { display: grid; grid-template-columns: 1fr; }
+      .composer { flex-direction: column; align-items: stretch; position: sticky; bottom: 0; background: var(--card); }
+      .promo { grid-template-columns: 1fr 120px; }
+      .promo img { width: 120px; height: 120px; }
+      .bubble { max-width: 92%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="top">
+      <div class="brand">
+        <div class="mark" aria-hidden="true"></div>
+        <div>
+          <h1>Convoplex</h1>
+          <p>Retention · Nigerian retail</p>
+        </div>
+      </div>
+      <p class="where" id="where">Lagos · Abuja · Port Harcourt</p>
+      <div class="grow"></div>
+      <div class="header-actions">
+        <span class="pill" id="mode">Mock mode</span>
+        <button type="button" class="quiet" id="reset" data-action="reset">Reset demo</button>
+      </div>
+    </header>
+    <p class="banner">Synthetic demo for the hackathon. Shops, customers, and phone numbers are fictional. Do not message them. Scenario date <span id="asof">27 Oct 2026</span>.</p>
+    <p class="error" id="error" hidden></p>
+    <section class="metrics" id="metrics" aria-label="Metrics"></section>
+    <div class="layout">
+      <section class="panel shop-panel">
+        <div class="shops-head">
+          <h2>Quiet regulars</h2>
+          <p class="sub" id="list-count">At risk and lapsed, by shop.</p>
+          <div class="filters">
+            <button type="button" data-action="filter" data-filter="all" class="on">All</button>
+            <button type="button" data-action="filter" data-filter="at_risk">At risk</button>
+            <button type="button" data-action="filter" data-filter="lapsed">Lapsed</button>
+          </div>
+        </div>
+        <div class="shops" id="shops">
+          <p class="empty" id="loading">Loading the shops…</p>
+        </div>
+      </section>
+      <section class="panel conversation">
+        <div class="person" id="person">
+          <div class="row">
+            <div>
+              <h2>Thread</h2>
+              <p class="sub">Pick a customer, then send a win-back.</p>
+            </div>
+          </div>
+        </div>
+        <div class="promo" id="promo" hidden></div>
+        <div class="thread" id="thread" aria-live="polite">
+          <p class="empty">The conversation shows up here, in a WhatsApp-style thread.</p>
+        </div>
+        <form class="composer" id="composer">
+          <label class="sr" for="reply" style="position:absolute;left:-999px">Customer reply</label>
+          <textarea id="reply" rows="2" maxlength="2000" placeholder="Reply as the customer. Decline, ask the price, or accept." disabled></textarea>
+          <button type="submit" id="send" disabled>Send reply</button>
+          <label class="upload">Voice note
+            <input id="voice" type="file" accept=".ogg,.wav,audio/ogg,audio/wav,audio/opus" disabled />
+          </label>
+        </form>
+      </section>
+    </div>
+    <section class="panel log">
+      <div class="log-head">
+        <h2>Action log</h2>
+        <span class="verdict" id="verify-result">Chain not checked</span>
+        <button type="button" id="verify" data-action="verify">Verify chain</button>
+      </div>
+      <div class="entries" id="entries"></div>
+    </section>
+  </div>
+  <script>
+    const state = {
+      retailers: [],
+      customers: [],
+      selected: null,
+      thread: null,
+      metrics: null,
+      actions: {entries: [], count: 0},
+      filter: "all",
+      busy: false,
+      cardVersion: null,
+    };
+
+    function el(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text != null) node.textContent = text;
+      return node;
+    }
+
+    function naira(value) {
+      return "₦" + Number(value || 0).toLocaleString("en-NG");
+    }
+
+    function percent(value) {
+      return Math.round(Number(value || 0) * 100) + "%";
+    }
+
+    function latency(ms) {
+      const n = Number(ms || 0);
+      if (n >= 1000) return (n / 1000).toFixed(1) + " s";
+      return n.toLocaleString("en-NG") + " ms";
+    }
+
+    function clock(ts) {
+      const match = String(ts || "").match(/T(\d{2}:\d{2})/);
+      return match ? match[1] : "";
+    }
+
+    function segmentLabel(segment) {
+      if (segment === "at_risk") return "At risk";
+      if (segment === "lapsed") return "Lapsed";
+      if (segment === "lost") return "Lost";
+      return segment || "";
+    }
+
+    async function api(path, options) {
+      const response = await fetch(path, options);
+      const text = await response.text();
+      let body = null;
+      try { body = text ? JSON.parse(text) : null; } catch { body = {detail: text}; }
+      if (!response.ok) {
+        const detail = body && (body.detail || body.message) || response.statusText;
+        throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+      }
+      return body;
+    }
+
+    function setError(message) {
+      const node = document.getElementById("error");
+      node.hidden = !message;
+      node.textContent = message || "";
+    }
+
+    function setBusy(busy) {
+      state.busy = busy;
+      const locked = busy || !state.selected;
+      document.getElementById("send").disabled = locked;
+      document.getElementById("reply").disabled = locked;
+      document.getElementById("voice").disabled = locked;
+    }
+
+    function renderMetrics() {
+      const host = document.getElementById("metrics");
+      const m = state.metrics || {};
+      const tiles = [
+        ["Win-back rate", percent(m.win_back_rate)],
+        ["Naira recovered", naira(m.naira_recovered)],
+        ["Offers sent", String(m.offers_sent || 0)],
+        ["Accepted", String(m.offers_accepted || 0)],
+        ["Declined", String(m.offers_declined || 0)],
+        ["Model calls", String(m.model_calls || 0)],
+        ["Tokens", Number(m.total_tokens || 0).toLocaleString("en-NG")],
+        ["Latency", latency(m.model_latency_ms)],
+      ];
+      host.replaceChildren();
+      for (const [label, value] of tiles) {
+        const tile = el("article", "metric");
+        tile.append(el("span", null, label), el("strong", null, value));
+        if (label === "Tokens") {
+          tile.title = `prompt ${m.prompt_tokens || 0}, completion ${m.completion_tokens || 0}, reasoning ${m.reasoning_tokens || 0}`;
+        }
+        host.append(tile);
+      }
+    }
+
+    function renderFilters() {
+      for (const button of document.querySelectorAll("[data-filter]")) {
+        button.classList.toggle("on", button.dataset.filter === state.filter);
+      }
+    }
+
+    function renderShops() {
+      const host = document.getElementById("shops");
+      const scroll = host.scrollTop;
+      const customers = state.customers.filter((row) => state.filter === "all" || row.segment === state.filter);
+      const groups = new Map(state.retailers.map((shop) => [shop.id, []]));
+      for (const customer of customers) {
+        if (!groups.has(customer.retailer_id)) groups.set(customer.retailer_id, []);
+        groups.get(customer.retailer_id).push(customer);
+      }
+      host.replaceChildren();
+      const label = state.filter === "all" ? "at risk or lapsed" : segmentLabel(state.filter).toLowerCase();
+      document.getElementById("list-count").textContent = `${customers.length} ${label}, by shop.`;
+      let shown = 0;
+      for (const retailer of state.retailers) {
+        const rows = groups.get(retailer.id) || [];
+        if (!rows.length) continue;
+        shown += rows.length;
+        const section = el("section", "shop");
+        section.append(el("h3", null, retailer.name));
+        section.append(el("p", "shop-meta", `${retailer.area}, ${retailer.city} · ${rows.length}`));
+        for (const customer of rows) section.append(customerButton(customer));
+        host.append(section);
+      }
+      if (!shown) host.append(el("p", "empty", "Nobody in this view."));
+      host.scrollTop = scroll;
+    }
+
+    function customerButton(customer) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "person-btn" + (state.selected && state.selected.id === customer.id ? " selected" : "");
+      button.dataset.id = String(customer.id);
+      const name = el("span", "name", customer.full_name);
+      const badge = el("span", "badge " + customer.segment, segmentLabel(customer.segment));
+      const meta = el("span", "sub", `${customer.area} · score ${customer.score} · ${customer.recency_days} days quiet`);
+      const reason = el("span", "reason", (customer.reasons && customer.reasons[0]) || "");
+      button.append(name, badge, meta, reason);
+      return button;
+    }
+
+    function renderPerson() {
+      const host = document.getElementById("person");
+      host.replaceChildren();
+      const row = el("div", "row");
+      const copy = document.createElement("div");
+      if (!state.selected) {
+        copy.append(el("h2", null, "Thread"));
+        copy.append(el("p", "sub", "Pick a customer, then send a win-back."));
+        row.append(copy);
+        host.append(row);
+        return;
+      }
+      const customer = state.selected;
+      const language = customer.language === "pcm" ? "Pidgin" : "English";
+      copy.append(el("h2", null, customer.full_name));
+      copy.append(el("p", "sub", `${customer.retailer_name} · ${customer.area} · ${language} · ${customer.phone}`));
+      if (customer.favourite_product) {
+        const stock = customer.favourite_in_stock ? "in stock" : "out of stock";
+        copy.append(el("p", "sub", `Usually buys ${customer.favourite_product} (${stock}).`));
+      }
+      const reasons = document.createElement("ul");
+      reasons.className = "reasons";
+      for (const reason of customer.reasons || []) reasons.append(el("li", null, reason));
+      copy.append(reasons);
+      const order = state.thread && state.thread.offer && state.thread.order;
+      if (order) copy.append(el("p", "order-line", `Order #${order.order_id} · ${naira(order.total_ngn)}`));
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "primary";
+      button.dataset.action = "winback";
+      button.textContent = state.busy ? "Working…" : "Send win-back";
+      button.disabled = state.busy;
+      row.append(copy, button);
+      host.append(row);
+    }
+
+    function renderThread() {
+      const host = document.getElementById("thread");
+      host.replaceChildren();
+      if (!state.selected) {
+        host.append(el("p", "empty", "The conversation shows up here, in a WhatsApp-style thread."));
+        return;
+      }
+      const messages = (state.thread && state.thread.messages) || [];
+      if (!messages.length) {
+        host.append(el("p", "empty", "No messages yet. Send a win-back to open the thread."));
+        return;
+      }
+      for (const message of messages) {
+        const bubble = el("div", "bubble " + (message.role === "shop" ? "shop" : "customer"));
+        if (message.voice) {
+          bubble.append(el("span", "voice-cap", `Voice note · ${message.voice.model} · ${message.voice.latency_ms} ms`));
+        }
+        bubble.append(el("p", null, message.text));
+        const who = message.role === "shop" ? "Shop" : "Customer";
+        const intent = message.intent ? ` · ${message.intent}` : "";
+        bubble.append(el("span", "stamp", `${who}${intent} · ${clock(message.ts)}`));
+        host.append(bubble);
+      }
+      host.scrollTop = host.scrollHeight;
+    }
+
+    async function probeImage(url) {
+      try {
+        const response = await fetch(url, {method: "HEAD"});
+        return response.ok;
+      } catch {
+        return false;
+      }
+    }
+
+    function renderPromo() {
+      const host = document.getElementById("promo");
+      const offer = state.thread && state.thread.offer;
+      host.replaceChildren();
+      if (!offer) {
+        host.hidden = true;
+        return;
+      }
+      host.hidden = false;
+      const copy = document.createElement("div");
+      copy.append(el("h3", null, offer.product_name));
+      copy.append(el("p", "promo-price", `${naira(offer.offer_price_ngn)} · was ${naira(offer.list_price_ngn)} · ${offer.discount_percent}% off`));
+      copy.append(el("p", "fine", "The image model draws the product only. Shop name and naira prices are printed afterwards, so every number matches the offer."));
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "primary";
+      button.dataset.action = "promo";
+      button.textContent = state.busy ? "Working…" : "Generate promo card";
+      button.disabled = state.busy;
+      copy.append(button);
+      const frame = el("div", "promo-frame");
+      host.append(copy, frame);
+      const src = offer.promo_url + (state.cardVersion ? `?t=${state.cardVersion}` : `?t=${Date.now()}`);
+      probeImage(offer.promo_url).then((ok) => {
+        if (!ok) return;
+        if (!state.thread || !state.thread.offer || state.thread.offer.offer_id !== offer.offer_id) return;
+        const img = document.createElement("img");
+        img.alt = `Promo card for ${offer.product_name}, ${naira(offer.offer_price_ngn)}`;
+        img.src = src;
+        frame.replaceChildren(img);
+      });
+    }
+
+    function summarise(entry) {
+      const payload = entry.payload || {};
+      if (entry.kind === "message") return payload.content || "";
+      if (entry.kind === "model_call" && payload.task === "transcribe") {
+        return `${payload.transcript} · ${payload.model} · ${payload.latency_ms} ms`;
+      }
+      if (entry.kind === "model_call" && payload.task === "promo_card") {
+        return `${payload.model} · offer ${payload.offer_id} · ${payload.latency_ms} ms`;
+      }
+      if (entry.kind === "tool_call") return payload.name || "tool";
+      if (entry.kind === "tool_result") return `${payload.name || "tool"} ${payload.ok ? "ok" : "failed"}`;
+      if (entry.kind === "model_call") return `${payload.task || "chat"} · ${payload.latency_ms || 0} ms`;
+      return entry.kind;
+    }
+
+    function renderLog() {
+      const host = document.getElementById("entries");
+      host.replaceChildren();
+      const entries = state.actions.entries || [];
+      if (!entries.length) {
+        host.append(el("p", "empty", "The log is empty. A win-back writes the first link in the chain."));
+        return;
+      }
+      for (const entry of entries) {
+        const item = document.createElement("details");
+        const summary = document.createElement("summary");
+        summary.textContent = `${entry.seq} · ${clock(entry.ts)} · ${entry.kind} · ${summarise(entry)}`;
+        const pre = document.createElement("pre");
+        pre.textContent = JSON.stringify(entry, null, 2);
+        item.append(summary, pre);
+        host.append(item);
+      }
+    }
+
+    async function refreshSide() {
+      const [metrics, actions] = await Promise.all([
+        api("/v1/metrics"),
+        api("/v1/actions?limit=80"),
+      ]);
+      state.metrics = metrics;
+      state.actions = actions;
+      renderMetrics();
+      renderLog();
+    }
+
+    async function refreshThread() {
+      if (!state.selected) return;
+      state.thread = await api(`/v1/customers/${state.selected.id}/thread`);
+      state.selected = state.thread.customer;
+      renderPerson();
+      renderThread();
+      renderPromo();
+      renderShops();
+    }
+
+    async function selectCustomer(id) {
+      setError("");
+      state.cardVersion = null;
+      state.thread = await api(`/v1/customers/${id}/thread`);
+      state.selected = state.thread.customer;
+      setBusy(false);
+      renderShops();
+      renderPerson();
+      renderThread();
+      renderPromo();
+    }
+
+    async function sendWinback() {
+      if (!state.selected || state.busy) return;
+      setBusy(true);
+      setError("");
+      renderPerson();
+      try {
+        await api(`/v1/customers/${state.selected.id}/winback`, {method: "POST"});
+        await refreshThread();
+        await refreshSide();
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setBusy(false);
+        renderPerson();
+        renderPromo();
+      }
+    }
+
+    async function sendReply(text) {
+      if (!state.selected || state.busy) return;
+      setBusy(true);
+      setError("");
+      try {
+        await api(`/v1/customers/${state.selected.id}/reply`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({text}),
+        });
+        document.getElementById("reply").value = "";
+        await refreshThread();
+        await refreshSide();
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setBusy(false);
+        renderPerson();
+      }
+    }
+
+    async function sendVoice(file) {
+      if (!state.selected || state.busy || !file) return;
+      setBusy(true);
+      setError("");
+      try {
+        const form = new FormData();
+        form.append("request", JSON.stringify({
+          model: "muse-voice-transcribe-1.0",
+          audioEncoding: "WAV",
+          mode: "PUSH_TO_TALK",
+        }));
+        form.append("audio", file, file.name);
+        form.append("customer_id", String(state.selected.id));
+        await api("/v1/voice/transcribe", {method: "POST", body: form});
+        await refreshThread();
+        await refreshSide();
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setBusy(false);
+        document.getElementById("voice").value = "";
+        renderPerson();
+      }
+    }
+
+    async function sendPromo() {
+      const offer = state.thread && state.thread.offer;
+      if (!offer || state.busy) return;
+      setBusy(true);
+      setError("");
+      renderPromo();
+      try {
+        await api(`/v1/offers/${offer.offer_id}/promo-card`, {method: "POST"});
+        state.cardVersion = Date.now();
+        await refreshSide();
+        renderPromo();
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setBusy(false);
+        renderPerson();
+        renderPromo();
+      }
+    }
+
+    async function verifyChain() {
+      setError("");
+      const result = await api("/v1/actions/verify", {method: "POST"});
+      const node = document.getElementById("verify-result");
+      node.className = result.ok ? "verdict pass" : "verdict fail";
+      node.textContent = result.ok ? `PASS · ${result.entries} entries` : `FAIL · ${result.error}`;
+    }
+
+    async function resetDemo() {
+      const button = document.getElementById("reset");
+      if (button.dataset.armed !== "yes") {
+        button.dataset.armed = "yes";
+        button.textContent = "Confirm reset";
+        setTimeout(() => {
+          button.dataset.armed = "no";
+          button.textContent = "Reset demo";
+        }, 4000);
+        return;
+      }
+      button.dataset.armed = "no";
+      button.textContent = "Resetting…";
+      setError("");
+      try {
+        await api("/v1/demo/reset", {method: "POST"});
+        state.selected = null;
+        state.thread = null;
+        state.cardVersion = null;
+        document.getElementById("verify-result").className = "verdict";
+        document.getElementById("verify-result").textContent = "Chain not checked";
+        await boot();
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        button.textContent = "Reset demo";
+        setBusy(false);
+      }
+    }
+
+    async function boot() {
+      const [health, retailers, listed, metrics, actions] = await Promise.all([
+        api("/health"),
+        api("/v1/retailers"),
+        api("/v1/customers/at-risk?limit=500"),
+        api("/v1/metrics"),
+        api("/v1/actions?limit=80"),
+      ]);
+      document.getElementById("mode").textContent = health.llm_mode === "live" ? "Live Muse" : "Mock mode";
+      document.getElementById("asof").textContent = health.scenario_as_of || "27 Oct 2026";
+      state.retailers = retailers.retailers || [];
+      state.customers = listed.customers || [];
+      state.metrics = metrics;
+      state.actions = actions;
+      if (state.selected) {
+        const still = state.customers.find((row) => row.id === state.selected.id);
+        state.selected = still || null;
+        state.thread = null;
+      }
+      renderMetrics();
+      renderFilters();
+      renderShops();
+      renderPerson();
+      renderThread();
+      renderPromo();
+      renderLog();
+      setBusy(state.busy);
+    }
+
+    document.getElementById("shops").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-id]");
+      if (!button) return;
+      selectCustomer(Number(button.dataset.id)).catch((err) => setError(err.message));
+    });
+
+    document.body.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-action]");
+      if (!button || button.disabled) return;
+      const action = button.dataset.action;
+      if (action === "filter") {
+        state.filter = button.dataset.filter;
+        renderFilters();
+        renderShops();
+      } else if (action === "winback") {
+        sendWinback();
+      } else if (action === "promo") {
+        sendPromo();
+      } else if (action === "verify") {
+        verifyChain().catch((err) => setError(err.message));
+      } else if (action === "reset") {
+        resetDemo();
+      }
+    });
+
+    document.getElementById("composer").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const text = document.getElementById("reply").value.trim();
+      if (!text) return;
+      sendReply(text);
+    });
+
+    document.getElementById("voice").addEventListener("change", () => {
+      const file = document.getElementById("voice").files[0];
+      if (file) sendVoice(file);
+    });
+
+    boot().catch((err) => setError(err.message));
+  </script>
+</body>
+</html>

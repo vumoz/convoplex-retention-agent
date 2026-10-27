@@ -11,8 +11,11 @@ def _app(shop, tmp_path, **extra):
     settings = Settings(
         db_path=Path(db_file),
         log_path=tmp_path / "actions.jsonl",
-        llm_mode="mock",
+        output_dir=tmp_path / "output",
+        llm_mode=extra.get("llm_mode") or "mock",
         whatsapp_verify_token=extra.get("whatsapp_verify_token"),
+        meta_api_key=extra.get("meta_api_key"),
+        meta_base_url=extra.get("meta_base_url") or "https://api.meta.ai/v1",
     )
     return create_app(settings, generate_if_missing=False)
 
@@ -124,60 +127,8 @@ def test_usage_totals_sum_logged_model_calls():
     }
 
 
-def test_voice_image_and_whatsapp_stubs(shop, tmp_path):
+def test_whatsapp_webhook_stays_a_stub(shop, tmp_path):
     client = TestClient(_app(shop, tmp_path, whatsapp_verify_token="hackathon-token"))
-    bare = client.post("/v1/voice/transcribe")
-    assert bare.status_code == 422
-
-    wav = _tiny_wav()
-    voice = client.post(
-        "/v1/voice/transcribe",
-        files={
-            "request": (
-                None,
-                '{"model":"muse-voice-transcribe-1.0","audioEncoding":"WAV","mode":"PUSH_TO_TALK"}',
-                "application/json",
-            ),
-            "audio": ("note.wav", wav, "audio/wav"),
-        },
-    )
-    assert voice.status_code == 501
-    assert voice.json()["validated"] is True
-    assert voice.json()["upstream"].endswith("/asr/transcribe")
-    assert voice.json()["conversion_required"] is False
-
-    ogg = client.post(
-        "/v1/voice/transcribe",
-        files={
-            "request": (None, "{}", "application/json"),
-            "audio": ("note.ogg", b"ogg-bytes", "audio/ogg"),
-        },
-    )
-    assert ogg.status_code == 501
-    assert ogg.json()["conversion_required"] is True
-    assert ogg.json()["ffmpeg"][0] == "ffmpeg"
-    assert "16000" in ogg.json()["ffmpeg"]
-
-    bad = client.post(
-        "/v1/voice/transcribe",
-        files={
-            "request": (None, "not-json", "application/json"),
-            "audio": ("note.wav", wav, "audio/wav"),
-        },
-    )
-    assert bad.status_code == 400
-
-    missing_card = client.post("/v1/offers/99/promo-card")
-    assert missing_card.status_code == 404
-    client.post("/v1/customers/1/winback")
-    card = client.post("/v1/offers/1/promo-card")
-    assert card.status_code == 501
-    request = card.json()["request"]
-    assert request["model"] == "muse-image-1.0"
-    assert request["n"] == 1
-    assert "Mama Gold" in request["prompt"]
-    assert card.json()["upstream"].endswith("/images/generations")
-
     challenge = client.get(
         "/v1/whatsapp/webhook",
         params={"hub.mode": "subscribe", "hub.verify_token": "hackathon-token", "hub.challenge": "12345"},
@@ -221,17 +172,3 @@ def test_voice_image_and_whatsapp_stubs(shop, tmp_path):
 
     unconfigured = TestClient(_app(shop, tmp_path))
     assert unconfigured.get("/v1/whatsapp/webhook").status_code == 501
-
-
-def _tiny_wav() -> bytes:
-    import io
-    import struct
-    import wave
-
-    buffer = io.BytesIO()
-    with wave.open(buffer, "wb") as handle:
-        handle.setnchannels(1)
-        handle.setsampwidth(2)
-        handle.setframerate(16000)
-        handle.writeframes(struct.pack("<h", 0) * 160)
-    return buffer.getvalue()

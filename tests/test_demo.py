@@ -79,6 +79,55 @@ def test_scenario_replies_can_decline_without_an_order(tmp_path, monkeypatch, ca
     assert "Unknown customer" in capsys.readouterr().err
 
 
+def test_cli_voice_note_and_promo_card(tmp_path, monkeypatch, capsys):
+    import io
+    import struct
+    import wave
+
+    from convoplex.context import list_at_risk
+    from convoplex.db import connect
+    from convoplex.synthetic.generate import generate
+
+    db_path = tmp_path / "voice.sqlite"
+    log_path = tmp_path / "voice.jsonl"
+    output = tmp_path / "output"
+    generate(db_path, n_customers=40, seed=4)
+    conn = connect(db_path)
+    ranked = [
+        row
+        for row in list_at_risk(conn, limit=40)
+        if row.get("favourite_product") and row["favourite_product"]["stock_qty"] > 0
+    ]
+    customer_id = ranked[0]["id"]
+    conn.close()
+    wav_path = tmp_path / "note.wav"
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(16000)
+        handle.writeframes(struct.pack("<h", 0) * 160)
+    wav_path.write_bytes(buffer.getvalue())
+    monkeypatch.setenv("CONVOPLEX_DB", str(db_path))
+    monkeypatch.setenv("CONVOPLEX_LOG", str(log_path))
+    monkeypatch.setenv("CONVOPLEX_OUTPUT", str(output))
+    code = main(
+        ["demo", "--mock", "--customer", str(customer_id), "--voice", str(wav_path), "--promo-card"]
+    )
+    assert code == 0
+    printed = capsys.readouterr().out
+    assert "Customer voice note (mock, 0 ms):" in printed
+    assert "Yes o, no wahala" in printed
+    assert "Promo card:" in printed
+    assert "verify OK" in printed
+    assert list((output / "promo").glob("*.webp"))
+    missing = main(
+        ["demo", "--mock", "--customer", str(customer_id), "--voice", str(tmp_path / "missing.ogg")]
+    )
+    assert missing == 1
+    assert "Voice note not found" in capsys.readouterr().err
+
+
 def test_cli_demo_and_verify(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CONVOPLEX_DB", str(tmp_path / "cli.sqlite"))
     monkeypatch.setenv("CONVOPLEX_LOG", str(tmp_path / "cli.jsonl"))

@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 from collections import Counter
 from datetime import date
 
@@ -7,6 +8,28 @@ import pytest
 from convoplex.context import score_directory
 from convoplex.db import SYNTHETIC_LABEL, connect
 from convoplex.synthetic.generate import SCENARIO_AS_OF, WINDOW_END, WINDOW_START, generate
+
+
+def test_connection_can_be_used_from_another_thread(tmp_path):
+    path = tmp_path / "threads.sqlite"
+    owner = connect(path)
+    owner.execute("CREATE TABLE IF NOT EXISTS ping (n INTEGER)")
+    owner.commit()
+    owner.close()
+    conn = connect(path)
+    errors: list[BaseException] = []
+
+    def use_and_close() -> None:
+        try:
+            assert conn.execute("SELECT 1").fetchone()[0] == 1
+            conn.close()
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker = threading.Thread(target=use_and_close)
+    worker.start()
+    worker.join()
+    assert errors == []
 
 
 def test_full_synthetic_book(tmp_path):
