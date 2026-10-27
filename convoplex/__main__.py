@@ -7,6 +7,7 @@ import sys
 
 from convoplex.config import Settings
 from convoplex.demo import format_demo, run_demo
+from convoplex.integrations.images import clear_promo_cards
 from convoplex.llm import LLMError
 from convoplex.synthetic.generate import DEFAULT_CUSTOMERS, DEFAULT_SEED, generate
 
@@ -31,6 +32,17 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Customer reply. Repeat for decline, question, then accept. Default is one accepting reply.",
     )
+    demo_cmd.add_argument(
+        "--voice",
+        default=None,
+        metavar="PATH",
+        help="OGG or WAV voice-note reply. Transcribed, then handled like --reply.",
+    )
+    demo_cmd.add_argument(
+        "--promo-card",
+        action="store_true",
+        help="Draw a promo card for the offer and print its path.",
+    )
 
     verify_cmd = sub.add_parser("verify", help="Check the hash-chained action log")
     verify_cmd.add_argument("path", nargs="?", default=None)
@@ -46,6 +58,7 @@ def main(argv: list[str] | None = None) -> int:
         path = generate(settings.db_path, n_customers=args.customers, seed=args.seed)
         if settings.log_path.exists():
             settings.log_path.unlink()
+        clear_promo_cards(settings.output_dir)
         print(f"Wrote synthetic database to {path}")
         return 0
 
@@ -63,6 +76,8 @@ def main(argv: list[str] | None = None) -> int:
                 customer_id=args.customer,
                 language=args.lang,
                 replies=args.reply,
+                voice_path=args.voice,
+                promo_card=args.promo_card,
             )
         except (LLMError, RuntimeError, LookupError, ValueError) as exc:
             print(f"Demo failed: {exc}", file=sys.stderr)

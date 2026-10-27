@@ -7,7 +7,32 @@ customer is never quoted a made-up price.
 
 from __future__ import annotations
 
+import re
+
 from convoplex.money import naira
+
+# Payday sentences the calendar actually gives the model. A festive sentence
+# stacked on top of one of these is a second hook and has to go.
+_PAYDAY_CUES = (
+    "month-end",
+    "payday",
+    "salary don land",
+    "salary has landed",
+    "e good time to stock up",
+    "a good time to restock",
+    "e good time to plan",
+    "a good time to plan ahead",
+)
+_FESTIVE_CUES = (
+    "detty",
+    "christmas",
+    "easter",
+    "eid",
+    "new yam",
+    "independence",
+    "democracy day",
+    "children's day",
+)
 
 
 def _first(full_name: str) -> str:
@@ -15,6 +40,11 @@ def _first(full_name: str) -> str:
 
 
 def _payday_note(ctx: dict) -> str:
+    """The one seasonal hook the template is allowed to add.
+
+    Festive notes stay in local_context for the model. The template does not
+    append them as well, so a win-back never carries two hooks.
+    """
     lines = (ctx.get("payday") or {}).get("customer_line") or {}
     language = "pcm" if ctx.get("language") == "pcm" else "en"
     sentence = lines.get(language)
@@ -23,21 +53,215 @@ def _payday_note(ctx: dict) -> str:
     return ""
 
 
+def _is_payday(text: str) -> bool:
+    low = text.lower()
+    return any(cue in low for cue in _PAYDAY_CUES)
+
+
+def _is_festive(text: str) -> bool:
+    low = text.lower()
+    return any(cue in low for cue in _FESTIVE_CUES)
+
+
+def one_seasonal_hook(text: str) -> str:
+    """Keep a single seasonal hook. Payday wins when a draft stacked both."""
+    pieces = [piece for piece in re.split(r"(?<=[.!?…])\s+", (text or "").strip()) if piece]
+    if not pieces:
+        return text or ""
+    if not any(_is_payday(piece) for piece in pieces) or not any(_is_festive(piece) for piece in pieces):
+        return " ".join(pieces)
+    kept: list[str] = []
+    for piece in pieces:
+        if _is_festive(piece) and not _is_payday(piece):
+            continue
+        if _is_festive(piece) and _is_payday(piece):
+            piece = _drop_festive_clause(piece)
+        if piece:
+            kept.append(piece)
+    return " ".join(kept).strip()
+
+
+def _drop_festive_clause(sentence: str) -> str:
+    parts = re.split(r"\s*(?:…|\.\.\.|—|–|;)\s*", sentence)
+    kept = [part.strip() for part in parts if part.strip() and not (_is_festive(part) and not _is_payday(part))]
+    if not kept:
+        return sentence
+    text = " ".join(part.rstrip() for part in kept)
+    if sentence.rstrip().endswith((".", "!", "?")) and not text.endswith((".", "!", "?")):
+        text += sentence.rstrip()[-1]
+    return text
+
+
+def delivery_fee_ngn(delivery: dict | None) -> int | None:
+    """The rider fee from get_delivery_options, when delivery is actually offered."""
+    options = (delivery or {}).get("options") or []
+    rider = next((item for item in options if item.get("method") == "delivery"), None)
+    if not rider or not rider.get("available") or rider.get("fee_ngn") is None:
+        return None
+    return int(rider["fee_ngn"])
+
+
+def delivery_fee_sentence(ctx: dict, delivery: dict | None) -> str:
+    fee = delivery_fee_ngn(delivery)
+    if fee is None:
+        return ""
+    amount = naira(fee)
+    if ctx.get("language") == "pcm":
+        return f"Delivery fee na {amount}."
+    return f"The delivery fee is {amount}."
+
+
+def _split_sentences(text: str) -> list[str]:
+    return [piece for piece in re.split(r"(?<=[.!?])\s+", (text or "").strip()) if piece]
+
+
+def _fee_line_language(sentence: str) -> str | None:
+    """A standalone fee announcement, not a longer sentence that mentions the fee."""
+    low = sentence.strip().lower()
+    if re.match(r"^(the )?delivery fee is\b", low):
+        return "en"
+    if re.match(r"^delivery fee na\b", low):
+        return "pcm"
+    return None
+
+
+def _drop_other_language_fee_lines(text: str, ctx: dict) -> str:
+    """Keep fee announcements in the customer's language only."""
+    pidgin = ctx.get("language") == "pcm"
+    kept: list[str] = []
+    seen_fee = False
+    for sentence in _split_sentences(text):
+        kind = _fee_line_language(sentence)
+        if kind == ("en" if pidgin else "pcm"):
+            continue
+        if kind is not None:
+            if seen_fee:
+                continue
+            seen_fee = True
+        kept.append(sentence)
+    return " ".join(kept).strip()
+
+
+def ensure_delivery_fee(text: str, ctx: dict, delivery: dict | None) -> str:
+    """Append the tool's delivery fee once, in the customer's language, when it is missing."""
+    text = _drop_other_language_fee_lines(text, ctx)
+    fee = delivery_fee_ngn(delivery)
+    if fee is None or naira(fee) in (text or ""):
+        return text
+    extra = delivery_fee_sentence(ctx, delivery)
+    if not extra:
+        return text
+    return f"{(text or '').rstrip()} {extra}".strip()
+
+
+def customer_wants_delivery(user_text: str | None) -> bool:
+    """True when the customer already asked for delivery, as in 'Abeg deliver am'."""
+    low = (user_text or "").lower()
+    if re.search(r"\b(no|don't|do not)\b.{0,20}\bdeliver", low):
+        return False
+    if re.search(r"\b(how much|how many|wetin be|price of)\b", low):
+        return False
+    return re.search(r"\bdeliver", low) is not None
+
+
+def _asks_to_set_delivery(sentence: str) -> bool:
+    low = sentence.lower()
+    return bool(
+        re.search(
+            r"make i set the delivery|make we set (the )?delivery|should i set (the )?delivery|"
+            r"you wan make we deliver|should we deliver",
+            low,
+        )
+    )
+
+
+def _offers_fulfillment_choice(sentence: str) -> bool:
+    low = sentence.lower()
+    choice = "you fit choose" in low or "you can choose" in low
+    return choice and "pickup" in low and "delivery" in low
+
+
+def _confirms_delivery(text: str) -> bool:
+    low = text.lower()
+    return any(
+        phrase in low
+        for phrase in ("we go deliver", "we will deliver", "we don set delivery", "delivery is set")
+    )
+
+
+def _delivery_option(delivery: dict | None) -> dict | None:
+    options = (delivery or {}).get("options") or []
+    rider = next((item for item in options if item.get("method") == "delivery"), None)
+    if not rider or not rider.get("available"):
+        return None
+    return rider
+
+
+def delivery_confirmation(ctx: dict, delivery: dict | None, *, include_fee: bool) -> str:
+    rider = _delivery_option(delivery)
+    if rider is None:
+        return ""
+    window = rider.get("window") or "1 to 2 days"
+    where = rider.get("where") or "your area"
+    fee = delivery_fee_ngn(delivery)
+    if ctx.get("language") == "pcm":
+        line = f"We go deliver am ({window} for {where})."
+        if include_fee and fee is not None:
+            return f"{line} Delivery fee na {naira(fee)}."
+        return line
+    line = f"We will deliver it ({window} in {where})."
+    if include_fee and fee is not None:
+        return f"{line} The delivery fee is {naira(fee)}."
+    return line
+
+
+def polish_acceptance(
+    text: str,
+    ctx: dict,
+    delivery: dict | None,
+    user_text: str | None = None,
+) -> str:
+    """One fee line, in the customer's language, and a confirmation when they already chose delivery."""
+    text = ensure_delivery_fee(text, ctx, delivery)
+    if not customer_wants_delivery(user_text):
+        return text
+    if _delivery_option(delivery) is None:
+        return text
+    kept = [
+        sentence
+        for sentence in _split_sentences(text)
+        if not _asks_to_set_delivery(sentence) and not _offers_fulfillment_choice(sentence)
+    ]
+    text = " ".join(kept).strip()
+    if _confirms_delivery(text):
+        return ensure_delivery_fee(text, ctx, delivery)
+    fee = delivery_fee_ngn(delivery)
+    include_fee = fee is not None and naira(fee) not in text
+    extra = delivery_confirmation(ctx, delivery, include_fee=include_fee)
+    if not extra:
+        return text
+    return f"{text} {extra}".strip() if text else extra
+
+
 def delivery_sentence(ctx: dict, delivery: dict | None) -> str:
     """Pickup and delivery from get_delivery_options, in the customer's language."""
     options = (delivery or {}).get("options") or []
     pickup = next((item for item in options if item.get("method") == "pickup"), None)
     rider = next((item for item in options if item.get("method") == "delivery"), None)
     pidgin = ctx.get("language") == "pcm"
+    fee = delivery_fee_ngn(delivery)
+    fee_text = naira(fee) if fee is not None else None
     if pickup and pickup.get("available") and rider and rider.get("available"):
         if pidgin:
+            paid = f", delivery fee na {fee_text}" if fee_text else ""
             return (
                 f"You fit choose pickup ({pickup.get('window')} for {pickup.get('where')}) "
-                f"or delivery ({rider.get('window')} for {rider.get('where')})."
+                f"or delivery ({rider.get('window')} for {rider.get('where')}{paid})."
             )
+        paid = f", delivery fee {fee_text}" if fee_text else ""
         return (
             f"You can choose pickup ({pickup.get('window')} at {pickup.get('where')}) "
-            f"or delivery ({rider.get('window')} in {rider.get('where')})."
+            f"or delivery ({rider.get('window')} in {rider.get('where')}{paid})."
         )
     if pickup and pickup.get("available") and rider and not rider.get("available"):
         if pidgin:

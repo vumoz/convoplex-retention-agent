@@ -67,6 +67,10 @@ def classify_reply(text: str) -> str:
     lowered = text.lower().strip()
     if any(_contains(lowered, phrase) for phrase in EXPLICIT_ACCEPT):
         return "accept"
+    if re.search(r"\bdeliver", lowered) and not re.search(
+        r"\b(how much|how many|wetin be|price of)\b", lowered
+    ):
+        return "accept"
     if any(_contains(lowered, phrase) for phrase in DECLINE) or lowered in {"no", "nope", "nah"}:
         return "decline"
     if any(_contains(lowered, phrase) for phrase in SOFT_ACCEPT):

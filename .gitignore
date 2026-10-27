@@ -10,6 +10,7 @@ data/*.sqlite
 data/*.sqlite-*
 data/*.jsonl
 *.webp
+output/
 .DS_Store
 dist/
 *.egg-info/

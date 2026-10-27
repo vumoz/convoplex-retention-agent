@@ -32,6 +32,7 @@ def resolve_llm_mode(mode: str | None = None, *, api_key: str | None = None) -> 
 class Settings:
     db_path: Path
     log_path: Path
+    output_dir: Path = field(default_factory=lambda: ROOT / "output")
     llm_mode: str = "mock"
     meta_base_url: str = DEFAULT_BASE_URL
     chat_model: str = DEFAULT_CHAT_MODEL
@@ -53,10 +54,13 @@ class Settings:
         mode = resolve_llm_mode(os.environ.get("CONVOPLEX_LLM"), api_key=key)
         db = Path(os.environ.get("CONVOPLEX_DB") or (ROOT / "data" / "convoplex.sqlite"))
         log = Path(os.environ.get("CONVOPLEX_LOG") or (ROOT / "data" / "actions.jsonl"))
+        output = Path(os.environ.get("CONVOPLEX_OUTPUT") or (ROOT / "output"))
         if not db.is_absolute():
             db = ROOT / db
         if not log.is_absolute():
             log = ROOT / log
+        if not output.is_absolute():
+            output = ROOT / output
         try:
             max_tokens = int(os.environ.get("META_MAX_TOKENS") or MIN_TOOL_TOKENS)
         except ValueError as exc:
@@ -64,6 +68,7 @@ class Settings:
         return Settings(
             db_path=db,
             log_path=log,
+            output_dir=output,
             llm_mode=mode,
             meta_base_url=(os.environ.get("META_BASE_URL") or DEFAULT_BASE_URL).rstrip("/"),
             chat_model=os.environ.get("META_CHAT_MODEL") or DEFAULT_CHAT_MODEL,

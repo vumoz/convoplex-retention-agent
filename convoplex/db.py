@@ -101,9 +101,10 @@ CREATE INDEX IF NOT EXISTS idx_offers_customer ON offers(customer_id);
 
 
 def connect(path: Path | str) -> sqlite3.Connection:
+    # FastAPI may open a request connection on one worker thread and close it on another.
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, check_same_thread=False, timeout=5.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn

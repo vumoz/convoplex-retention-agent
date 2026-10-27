@@ -1,5 +1,5 @@
-"""Clients for Meta and WhatsApp features that later hackathon days will switch on.
+"""Clients for Muse Voice, Muse Image, and the WhatsApp Cloud API.
 
-The FastAPI routes that expose these are stubs. The request builders match the
-shapes verified against the Meta Model API notes so a key can be dropped in later.
+Voice notes and promo cards are wired. WhatsApp sending is still a stub.
+Request builders match the Meta Model API notes (October 2026).
 """

@@ -37,8 +37,9 @@ def payday_calendar(as_of: date) -> dict:
         "customer_line": {"pcm": pcm, "en": en},
         "instruction": (
             f"Today is {today}. status is context only. Never write the status value in the message. "
-            "In the first win-back only, write payday.customer_line for the customer's language, "
-            "as one natural sentence. Do not mention payday in a decline."
+            "The first win-back uses exactly one seasonal hook. Write payday.customer_line for the "
+            "customer's language as one natural sentence, and do not also write a local_context note. "
+            "Do not mention payday in a decline."
         ),
     }
 
