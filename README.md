@@ -15,7 +15,7 @@ This build is the core, end to end, on synthetic data:
 - 500 fictional customers across six shops, with orders from 27 Apr 2026 to 26 Oct 2026. Scores use a scenario date of 27 Oct 2026 so the demo does not drift after the event.
 - RFM-style lapse scoring with a written reason for every customer.
 - A Muse Spark tool loop: `check_stock`, `get_price`, `create_offer`, `place_order`, and `get_delivery_options` (synthetic pickup and a 1–2 day same-city window). The model is told not to invent a delivery weekday.
-- Messages mention month-end payday and festive seasons when those notes apply. The prompt includes today's scenario date and whether payday is upcoming, open, or just passed, so a message on 27 Oct does not claim salary has already entered.
+- Messages mention one payday phrase for the scenario date (`payday window open` on 27 Oct, not a second line such as "payday dey near") and festive seasons when those notes apply. Payday is only in the first win-back, not in a decline.
 - An append-only hash-chained action log, with a verify command.
 - A FastAPI backend for the at-risk list, win-back, replies, metrics, and the log.
 
@@ -82,7 +82,9 @@ python -m convoplex verify
 python -m convoplex serve
 ```
 
-`demo` leaves an existing database in place and appends to the action log. `demo --reset` and `generate` write a fresh database; `--reset` also starts a new log, because the old chain would describe a database that no longer exists. With no extra flags the demo picks a lapsed customer who prefers Pidgin, drafts an offer, accepts it with "Yes o, no wahala. Abeg send am today.", places the order, and verifies the action log.
+`demo` leaves an existing database in place and appends to the action log. `demo --reset` and `generate` write a fresh database and delete the action log, because the old chain would describe a database that no longer exists. With no extra flags the demo picks a lapsed customer who prefers Pidgin, drafts an offer, accepts it with "Yes o, no wahala. Abeg send am today.", places the order, and verifies the action log.
+
+A declined offer stays valid while the product is in stock. A later question quotes the offer price, and a later accept charges that price even if the model omits `offer_id`. Follow-up replies do not greet again. The agent reuses stock and price results already in the thread, and a confirmation includes pickup and delivery from `get_delivery_options`.
 
 To show a decline, a question, or an accept for one customer:
 

@@ -86,6 +86,19 @@ def test_place_order_caps_at_stock_and_max_per_order(shop):
     assert shop.execute("SELECT stock_qty FROM products WHERE id = 1").fetchone()["stock_qty"] == 18
 
 
+def test_declined_offer_is_charged_when_place_order_omits_offer_id(shop):
+    offer = create_offer(shop, customer_id=1, product_id=1, discount_percent=10)
+    shop.execute("UPDATE offers SET status = 'declined' WHERE id = ?", (offer["offer_id"],))
+    order = place_order(shop, customer_id=1, product_id=1, qty=2)
+    assert order["ok"] is True
+    assert order["offer_id"] == offer["offer_id"]
+    assert order["unit_price_ngn"] == 70200
+    assert order["qty"] == 2
+    assert order["total_ngn"] == 140400
+    status = shop.execute("SELECT status FROM offers WHERE id = ?", (offer["offer_id"],)).fetchone()["status"]
+    assert status == "accepted"
+
+
 def test_delivery_options_are_synthetic_windows(shop):
     shop.execute(
         """

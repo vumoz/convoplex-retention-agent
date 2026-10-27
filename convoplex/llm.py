@@ -415,9 +415,10 @@ class MockMuse:
     def _reply(self, messages: list[dict], context: dict, results: dict[str, dict]) -> Completion:
         intent = classify_reply(_last_user_text(messages))
         offer = context.get("open_offer")
+        user_text = _last_user_text(messages)
         if intent == "accept" and offer and "place_order" not in results:
             stock = int(offer.get("stock_qty") or 1)
-            qty = max(1, min(int(context.get("suggested_qty") or 1), stock, 3))
+            qty = _qty_from_text(user_text, context, stock)
             return _calls(
                 results,
                 [
@@ -433,9 +434,23 @@ class MockMuse:
                 ],
             )
         if intent == "accept" and offer and "place_order" in results:
+            if _known(context, results, "get_delivery_options") is None:
+                return _calls(
+                    results,
+                    [
+                        (
+                            "get_delivery_options",
+                            {
+                                "retailer_id": context["retailer_id"],
+                                "customer_id": context["customer_id"],
+                            },
+                        )
+                    ],
+                )
             order = results.get("place_order") or {}
+            delivery = _known(context, results, "get_delivery_options")
             if order.get("ok"):
-                text = accept_message(context, order)
+                text = accept_message(context, order, delivery)
             else:
                 text = f"We could not place that order: {order.get('error', 'please try again.')}"
             return Completion(content=f"{text}\nINTENT: accept", finish_reason="stop")
@@ -447,30 +462,60 @@ class MockMuse:
                 )
             else:
                 text = (
-                    f"Hello {_first(context['full_name'])}, there is no open offer to confirm yet. "
+                    f"{_first(context['full_name'])}, there is no open offer to confirm yet. "
                     "Tell us what you would like and we will check the shelf."
                 )
             return Completion(content=f"{text}\nINTENT: question", finish_reason="stop")
         if intent == "decline":
             return Completion(content=f"{decline_message(context)}\nINTENT: decline", finish_reason="stop")
-        if "get_price" not in results and "check_stock" not in results:
-            product_name = (offer or {}).get("product_name") or (context.get("favourite_product") or {}).get("name")
-            product_name = product_name or "rice"
+        price = _known(context, results, "get_price")
+        stock = _known(context, results, "check_stock")
+        if price is None and stock is None and not offer:
+            product_name = (context.get("favourite_product") or {}).get("name") or "rice"
             return _calls(
                 results,
                 [
-                    ("get_price", {"product": product_name, "retailer_id": context["retailer_id"]}),
+                    (
+                        "get_price",
+                        {
+                            "product": product_name,
+                            "retailer_id": context["retailer_id"],
+                            "customer_id": context["customer_id"],
+                        },
+                    ),
                     ("check_stock", {"product": product_name, "retailer_id": context["retailer_id"]}),
                 ],
             )
-        price = results.get("get_price") or {}
-        stock = results.get("check_stock") or {}
+        price = price or {}
+        stock = stock or {}
         product_name = price.get("name") or (offer or {}).get("product_name") or "that item"
+        quoted = price.get("quote_price_ngn", price.get("price_ngn"))
+        if offer and offer.get("offer_price_ngn") is not None:
+            quoted = offer["offer_price_ngn"]
+            product_name = offer.get("product_name") or product_name
         stock_qty = price.get("stock_qty")
+        if offer and offer.get("stock_qty") is not None:
+            stock_qty = offer["stock_qty"]
         if stock.get("matches"):
             stock_qty = stock["matches"][0].get("stock_qty", stock_qty)
-        text = question_message(context, product_name, price.get("price_ngn"), stock_qty)
+        text = question_message(context, product_name, quoted, stock_qty)
         return Completion(content=f"{text}\nINTENT: question", finish_reason="stop")
+
+
+def _known(context: dict, results: dict[str, dict], name: str) -> dict | None:
+    if name in results:
+        return results[name]
+    prior = context.get("prior_tool_results") or {}
+    found = prior.get(name)
+    return found if isinstance(found, dict) else None
+
+
+def _qty_from_text(text: str, context: dict, stock: int) -> int:
+    numbers = [int(number) for number in re.findall(r"\d+", text)]
+    requested = numbers[-1] if numbers else int(context.get("suggested_qty") or 1)
+    if stock > 0:
+        return max(1, min(requested, stock))
+    return max(1, requested)
 
 
 def _favourite_in_stock(context: dict, results: dict[str, dict]) -> bool:

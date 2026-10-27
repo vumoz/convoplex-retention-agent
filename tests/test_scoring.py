@@ -65,13 +65,19 @@ def test_local_context_mentions_payday_and_festivals():
     assert "new yam" in " ".join(local_context(date(2026, 8, 15))).lower()
     assert "christmas" in " ".join(local_context(date(2026, 12, 20))).lower()
     january = " ".join(local_context(date(2026, 1, 15))).lower()
-    assert "upcoming" in january
-    assert "25th" in january
+    assert "payday still coming" in january
+    assert "dey near" not in january
     assert "don enter" not in january
     october = " ".join(local_context(date(2026, 10, 27))).lower()
-    assert "do not say salary don enter" in october
+    assert "payday window open" in october
+    assert "dey near" not in october
+    assert "just open" not in october
     assert "easter" in " ".join(local_context(date(2026, 4, 5))).lower()
-    assert payday_calendar(date(2026, 10, 27))["status"] == "open"
+    opened = payday_calendar(date(2026, 10, 27))
+    assert opened["status"] == "open"
+    assert opened["phrase"] == "payday window open"
+    assert "dey near" not in opened["instruction"]
+    assert "just open" not in opened["instruction"]
     assert payday_calendar(date(2026, 10, 27))["today"] == "2026-10-27"
     assert payday_calendar(date(2026, 1, 2))["status"] == "passed"
     assert payday_calendar(date(2026, 1, 15))["status"] == "upcoming"

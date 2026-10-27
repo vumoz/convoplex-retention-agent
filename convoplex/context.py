@@ -12,38 +12,29 @@ AT_RISK_SEGMENTS = ("at_risk", "lapsed")
 
 
 def payday_calendar(as_of: date) -> dict:
-    """Whether month-end salary day is upcoming, in the window, or just passed.
+    """One payday phrase for the scenario date. Do not offer a second wording.
 
-    The window is the 25th through the 3rd. On the 27th the window is open, but
-    it is too early to say salary has already entered.
+    The window is the 25th through the 3rd. On the 27th the state is only
+    "payday window open". It is too early to say salary has already entered.
     """
     today = as_of.isoformat()
     if as_of.day <= 3:
-        return {
-            "today": today,
-            "status": "passed",
-            "instruction": (
-                f"Today is {today}. Month-end payday has just passed "
-                "(salaries often land between the 25th and the 3rd). "
-                "You may say salary don enter for many people. Do not say everyone has been paid."
-            ),
-        }
-    if as_of.day >= 25:
-        return {
-            "today": today,
-            "status": "open",
-            "instruction": (
-                f"Today is {today}. The payday window opened on the 25th and runs through the 3rd. "
-                "Salary has not necessarily entered yet. Do not write that salary 'don enter' "
-                "or has already been paid. Say the window just opened, or that payday dey near."
-            ),
-        }
+        phrase = "payday just passed"
+        extra = " You may add that salary don enter for many people, not for everyone."
+    elif as_of.day >= 25:
+        phrase = "payday window open"
+        extra = " Do not write that salary don enter or has already been paid."
+    else:
+        phrase = "payday still coming"
+        extra = " Do not write that salary don enter or has already been paid."
     return {
         "today": today,
-        "status": "upcoming",
+        "status": "passed" if as_of.day <= 3 else "open" if as_of.day >= 25 else "upcoming",
+        "phrase": phrase,
         "instruction": (
-            f"Today is {today}. Month-end payday is upcoming; it starts on the 25th. "
-            "Do not say salary has entered or 'don enter'."
+            f"Today is {today}. Payday state is exactly '{phrase}'. "
+            "If you mention payday, use that phrase and no other payday wording."
+            f"{extra} Mention payday only in the first win-back, never in a decline."
         ),
     }
 
@@ -51,19 +42,7 @@ def payday_calendar(as_of: date) -> dict:
 def local_context(as_of: date) -> list[str]:
     """Payday and festive notes a Lagos shop would actually use in a message."""
     notes: list[str] = []
-    payday = payday_calendar(as_of)
-    if payday["status"] == "passed":
-        notes.append(
-            "Payday has just passed (25th through the 3rd). Many salaries have landed; do not claim all of them have."
-        )
-    elif payday["status"] == "open":
-        notes.append(
-            "Payday window is open (25th through the 3rd) but it is early. Do not say salary don enter. Say payday dey near."
-        )
-    else:
-        notes.append(
-            "Month-end payday is still upcoming, from the 25th. Do not say salary has entered."
-        )
+    notes.append(payday_calendar(as_of)["phrase"])
     if as_of.month == 4 and as_of.day <= 12:
         notes.append("Easter season: family visits lift provisions and outfits.")
     if as_of.month == 5 and as_of.day >= 20:
@@ -268,7 +247,9 @@ def open_offer(conn: sqlite3.Connection, customer_id: int) -> dict | None:
                o.status, o.language, p.name AS product_name, p.stock_qty, p.unit
         FROM offers o
         JOIN products p ON p.id = o.product_id
-        WHERE o.customer_id = ? AND o.status = 'sent'
+        WHERE o.customer_id = ?
+          AND o.status IN ('drafted', 'sent', 'declined')
+          AND p.stock_qty > 0
         ORDER BY o.id DESC
         LIMIT 1
         """,
@@ -287,6 +268,7 @@ def open_offer(conn: sqlite3.Connection, customer_id: int) -> dict | None:
         "language": row["language"],
         "stock_qty": int(row["stock_qty"]),
         "unit": row["unit"],
+        "reusable": True,
     }
 
 
@@ -295,6 +277,7 @@ def agent_context(
     customer_id: int,
     task: str,
     language: str | None = None,
+    prior_tool_results: dict | None = None,
 ) -> dict | None:
     profile = get_customer(conn, customer_id)
     if profile is None:
@@ -331,4 +314,10 @@ def agent_context(
     }
     if task == "reply":
         context["open_offer"] = open_offer(conn, customer_id)
+        context["prior_tool_results"] = prior_tool_results or {}
+        context["thread"] = (
+            "Same thread as the win-back. Do not greet. Do not introduce the shop again. "
+            "Do not call check_stock or get_price when prior_tool_results already has them. "
+            "A declined open_offer is still the price: quote offer_price_ngn and pass its offer_id."
+        )
     return context

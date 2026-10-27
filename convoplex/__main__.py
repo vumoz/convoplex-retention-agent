@@ -44,6 +44,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "generate":
         path = generate(settings.db_path, n_customers=args.customers, seed=args.seed)
+        if settings.log_path.exists():
+            settings.log_path.unlink()
         print(f"Wrote synthetic database to {path}")
         return 0
 

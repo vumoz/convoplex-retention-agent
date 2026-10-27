@@ -25,6 +25,16 @@ def test_mock_demo_end_to_end(tmp_path):
     assert "SYNTHETIC" not in result.winback_message
 
 
+def test_generate_clears_the_action_log(tmp_path, monkeypatch, capsys):
+    log_path = tmp_path / "actions.jsonl"
+    log_path.write_text('{"old": true}\n', encoding="utf-8")
+    monkeypatch.setenv("CONVOPLEX_DB", str(tmp_path / "fresh.sqlite"))
+    monkeypatch.setenv("CONVOPLEX_LOG", str(log_path))
+    assert main(["generate", "--customers", "20", "--seed", "1"]) == 0
+    assert "Wrote synthetic database" in capsys.readouterr().out
+    assert not log_path.exists()
+
+
 def test_scenario_replies_can_decline_without_an_order(tmp_path, monkeypatch, capsys):
     from convoplex.context import list_at_risk
     from convoplex.db import connect

@@ -15,26 +15,41 @@ def _first(full_name: str) -> str:
 
 
 def _payday_note(ctx: dict) -> str:
-    status = (ctx.get("payday") or {}).get("status")
-    pidgin = ctx.get("language") == "pcm"
-    if status == "passed":
-        if pidgin:
-            return " Month-end salary don enter for many people, so this one go help."
-        return " Month-end salary has landed for many people, so this is a good week to restock."
-    if status == "open":
-        if pidgin:
-            return " Month-end payday dey near, salary never land yet."
-        return " Month-end payday is close, but salary has not necessarily landed yet."
-    if status == "upcoming":
-        if pidgin:
-            return " Payday still dey come from the 25th. E never enter yet."
-        return " Payday is still upcoming, from the 25th. Salary has not entered yet."
-    blob = " ".join(ctx.get("local_context") or []).lower()
-    if blob:
-        if pidgin:
-            return " Festive season dey come, so e good make you arrange am early."
-        return " Festive season is coming up, so this is a good time to sort it."
+    phrase = (ctx.get("payday") or {}).get("phrase")
+    if phrase:
+        return f" {phrase[0].upper() + phrase[1:]}."
     return ""
+
+
+def delivery_sentence(ctx: dict, delivery: dict | None) -> str:
+    """Pickup and delivery from get_delivery_options, in the customer's language."""
+    options = (delivery or {}).get("options") or []
+    pickup = next((item for item in options if item.get("method") == "pickup"), None)
+    rider = next((item for item in options if item.get("method") == "delivery"), None)
+    pidgin = ctx.get("language") == "pcm"
+    if pickup and pickup.get("available") and rider and rider.get("available"):
+        if pidgin:
+            return (
+                f"Pickup na {pickup.get('window')} for {pickup.get('where')}. "
+                f"Delivery na {rider.get('window')} for {rider.get('where')}."
+            )
+        return (
+            f"Pickup is {pickup.get('window')} at {pickup.get('where')}. "
+            f"Delivery is {rider.get('window')} in {rider.get('where')}."
+        )
+    if pickup and pickup.get("available") and rider and not rider.get("available"):
+        if pidgin:
+            return (
+                f"Pickup na {pickup.get('window')} for {pickup.get('where')}. "
+                "Delivery no dey outside the shop city."
+            )
+        return (
+            f"Pickup is {pickup.get('window')} at {pickup.get('where')}. "
+            "Delivery is not available outside the shop city."
+        )
+    if pidgin:
+        return "Pickup dey for the shop. Tell us if you want delivery."
+    return "Pickup is at the shop. Tell us if you want delivery."
 
 
 def winback_message(ctx: dict, offer: dict) -> str:
@@ -82,21 +97,20 @@ def out_of_stock_message(ctx: dict, product_name: str) -> str:
     )
 
 
-def accept_message(ctx: dict, order: dict) -> str:
+def accept_message(ctx: dict, order: dict, delivery: dict | None = None) -> str:
     first = _first(ctx["full_name"])
     total = naira(order["total_ngn"])
     product = order["product_name"]
     qty = order["qty"]
-    shop = ctx["retailer_name"]
-    area = ctx.get("retailer_area") or ctx["area"]
+    arrival = delivery_sentence(ctx, delivery)
     if ctx.get("language") == "pcm":
         return (
             f"E don set, {first}. We don reserve {qty} x {product} for you. "
-            f"Total na {total}. Come collect am at {shop}, {area}, or tell us if you want delivery."
+            f"Total na {total}. {arrival}"
         )
     return (
         f"Done, {first}. We have reserved {qty} x {product} for you. "
-        f"The total is {total}. Pick it up at {shop}, {area}, or tell us if you want delivery."
+        f"The total is {total}. {arrival}"
     )
 
 
@@ -112,6 +126,14 @@ def decline_message(ctx: dict) -> str:
 
 def question_message(ctx: dict, product_name: str, price_ngn: int | None, stock_qty: int | None) -> str:
     first = _first(ctx["full_name"])
+    offer = ctx.get("open_offer") or {}
+    if offer.get("offer_price_ngn") is not None and (
+        not offer.get("product_name") or offer.get("product_name") == product_name
+    ):
+        price_ngn = int(offer["offer_price_ngn"])
+        product_name = offer.get("product_name") or product_name
+        if offer.get("stock_qty") is not None:
+            stock_qty = offer["stock_qty"]
     price = naira(price_ngn) if price_ngn is not None else "the shelf price"
     stock = stock_qty if stock_qty is not None else "some"
     if ctx.get("language") == "pcm":

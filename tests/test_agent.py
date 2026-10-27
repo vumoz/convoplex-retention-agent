@@ -34,6 +34,9 @@ def test_pidgin_winback_and_accept_places_order(shop, log_path):
     assert reply.intent == "accept"
     assert reply.order["total_ngn"] == 70200
     assert "₦70,200" in reply.message
+    assert "pickup" in reply.message.lower()
+    assert "delivery" in reply.message.lower()
+    assert "how you dey" not in reply.message.lower()
     stock = shop.execute("SELECT stock_qty FROM products WHERE id = 1").fetchone()["stock_qty"]
     assert stock == 19
     verified = log.verify()
@@ -60,6 +63,7 @@ def test_english_winback_decline_and_question(shop, log_path):
     decline = handle_reply(shop, log, llm, 2, "No thank you, maybe next month", max_tokens=1000)
     assert decline.intent == "decline"
     assert decline.order is None
+    assert "payday" not in decline.message.lower()
     status = shop.execute(
         "SELECT status FROM offers WHERE customer_id = 2"
     ).fetchone()["status"]
@@ -68,7 +72,10 @@ def test_english_winback_decline_and_question(shop, log_path):
     question = handle_reply(shop, log, llm, 2, "How much be the rice now?", max_tokens=1000)
     assert question.intent == "question"
     assert question.order is None
-    assert "₦" in question.message
+    assert question.tool_trace == []
+    assert "₦70,200" in question.message
+    assert "₦78,000" not in question.message
+    assert "hello" not in question.message.lower()
     stock_after = shop.execute("SELECT stock_qty FROM products WHERE id = 1").fetchone()["stock_qty"]
     assert stock_after == stock_before
 
@@ -120,6 +127,55 @@ def test_active_customer_is_not_listed_as_at_risk(shop):
     tunde = get_customer(shop, 3)
     assert tunde["segment"] == "active"
     assert tunde["frequency"] == 5
+
+
+def test_decline_then_question_then_accept_keeps_the_offer(shop, log_path):
+    """The live failure: decline, ask the price, then take 2 at list price with no offer."""
+    from convoplex.metrics import snapshot
+
+    log = ActionLog(log_path)
+    llm = MockMuse()
+    win = draft_winback(shop, log, llm, 1, max_tokens=1000)
+    assert win.offer["offer_price_ngn"] == 70200
+    assert "Payday window open." in win.message
+    assert "dey near" not in win.message.lower()
+
+    decline = handle_reply(shop, log, llm, 1, "No thank you, maybe next month", max_tokens=1000)
+    assert decline.intent == "decline"
+    assert decline.order is None
+    assert "payday" not in decline.message.lower()
+    assert shop.execute("SELECT status FROM offers").fetchone()["status"] == "declined"
+
+    question = handle_reply(shop, log, llm, 1, "How much last price?", max_tokens=1000)
+    assert question.intent == "question"
+    assert question.order is None
+    assert question.tool_trace == []
+    assert "₦70,200" in question.message
+    assert "₦78,000" not in question.message
+    assert "how you dey" not in question.message.lower()
+    assert "Mama Nkechi" not in question.message
+
+    accept = handle_reply(shop, log, llm, 1, "Ok I go take 2", max_tokens=1000)
+    assert accept.intent == "accept"
+    assert accept.order["offer_id"] == win.offer["offer_id"]
+    assert accept.order["qty"] == 2
+    assert accept.order["unit_price_ngn"] == 70200
+    assert accept.order["total_ngn"] == 140400
+    assert "₦140,400" in accept.message
+    assert "₦78,000" not in accept.message
+    assert "pickup" in accept.message.lower()
+    assert "delivery" in accept.message.lower()
+    assert "how you dey" not in accept.message.lower()
+    assert "check_stock" not in accept.tool_trace
+    assert "get_price" not in accept.tool_trace
+    assert "get_delivery_options" in accept.tool_trace
+    status = shop.execute("SELECT status FROM offers").fetchone()["status"]
+    assert status == "accepted"
+    totals = snapshot(shop, log.read_all())
+    assert totals["offers_accepted"] == 1
+    assert totals["offers_declined"] == 0
+    assert totals["win_back_rate"] == 1.0
+    assert totals["naira_recovered"] == 140400
 
 
 def test_language_override_and_prompt_guardrails(shop, log_path):

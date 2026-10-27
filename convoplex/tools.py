@@ -74,7 +74,9 @@ TOOLS = [
             "name": "place_order",
             "description": (
                 "Place an order for the customer. Pass offer_id to charge the offer price "
-                "and mark the win-back accepted. Quantity is capped at shelf stock and at "
+                "and mark the win-back accepted. A declined offer is still valid: if you omit "
+                "offer_id, the customer's latest drafted, sent, or declined offer for this product "
+                "is attached and its price is charged. Quantity is capped at shelf stock and at "
                 f"{MAX_QTY} units per order. Stock is decremented by the capped quantity."
             ),
             "parameters": {
@@ -179,16 +181,36 @@ def check_stock(conn: sqlite3.Connection, product: str, retailer_id: int, **_ext
     return {"ok": True, "retailer_id": retailer_id, "matches": matches}
 
 
-def get_price(conn: sqlite3.Connection, product: str, retailer_id: int, **_extra) -> dict:
+def get_price(
+    conn: sqlite3.Connection,
+    product: str,
+    retailer_id: int,
+    customer_id: int | None = None,
+    **_extra,
+) -> dict:
     retailer_id = _as_int(retailer_id, "retailer_id")
+    if customer_id is not None:
+        customer_id = _as_int(customer_id, "customer_id")
     matches = find_products(conn, retailer_id, product)
     if not matches:
         return {"ok": False, "error": f"No product matching {product!r} at retailer {retailer_id}."}
     best = _product_payload(matches[0])
-    payload = {"ok": True, "retailer_id": retailer_id, **best}
+    payload = {"ok": True, "retailer_id": retailer_id, **best, "quote_price_ngn": best["price_ngn"]}
     if len(matches) > 1 and _rank(product, matches[0]["name"], matches[0]["sku"]) != 0:
         payload["note"] = "Several products matched. The first match is returned."
         payload["matches"] = [_product_payload(row) for row in matches]
+    if customer_id is not None:
+        offer = _latest_valid_offer(conn, customer_id, int(best["product_id"]))
+        if offer is not None:
+            payload["offer_id"] = int(offer["id"])
+            payload["offer_price_ngn"] = int(offer["offer_price_ngn"])
+            payload["list_price_ngn"] = int(offer["list_price_ngn"])
+            payload["quote_price_ngn"] = int(offer["offer_price_ngn"])
+            payload["offer_status"] = offer["status"]
+            payload["note"] = (
+                "quote_price_ngn is the win-back price. Use it in the customer message. "
+                "price_ngn is the list price."
+            )
     return payload
 
 
@@ -284,6 +306,19 @@ def create_offer(
     }
 
 
+def _latest_valid_offer(conn: sqlite3.Connection, customer_id: int, product_id: int | None = None):
+    sql = """
+        SELECT * FROM offers
+        WHERE customer_id = ? AND status IN ('drafted', 'sent', 'declined')
+    """
+    params: list = [customer_id]
+    if product_id is not None:
+        sql += " AND product_id = ?"
+        params.append(product_id)
+    sql += " ORDER BY id DESC LIMIT 1"
+    return conn.execute(sql, params).fetchone()
+
+
 def place_order(
     conn: sqlite3.Connection,
     customer_id: int,
@@ -311,13 +346,21 @@ def place_order(
 
     with transaction(conn):
         offer = None
-        if offer_id is not None:
+        if offer_id is None:
+            attached = _latest_valid_offer(conn, customer_id, product_id)
+            if attached is None and product_id is None:
+                attached = _latest_valid_offer(conn, customer_id, None)
+            if attached is not None:
+                offer = attached
+                offer_id = int(attached["id"])
+                product_id = int(attached["product_id"])
+        if offer_id is not None and offer is None:
             offer = conn.execute("SELECT * FROM offers WHERE id = ?", (offer_id,)).fetchone()
             if offer is None:
                 return {"ok": False, "error": f"Unknown offer_id {offer_id}."}
             if int(offer["customer_id"]) != customer_id:
                 return {"ok": False, "error": "Offer belongs to a different customer."}
-            if offer["status"] not in ("drafted", "sent"):
+            if offer["status"] not in ("drafted", "sent", "declined"):
                 return {"ok": False, "error": f"Offer is {offer['status']} and cannot be used."}
             product_id = int(offer["product_id"])
         row, error = _resolve_product(conn, customer, product_id, product)
