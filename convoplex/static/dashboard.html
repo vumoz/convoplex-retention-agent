@@ -65,7 +65,37 @@
     .brand p { margin: 3px 0 0; color: var(--soft); font-size: 13px; }
     .where { margin: 0; color: var(--palm-deep); font-size: 14px; }
     .grow { flex: 1; }
-    .header-actions { display: flex; align-items: center; gap: 8px; }
+    .header-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .admin-form { display: inline-flex; align-items: center; gap: 6px; }
+    .admin-form[hidden] { display: none; }
+    .admin-form input {
+      width: 9.5rem;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 6px 10px;
+      background: #fff;
+    }
+    .channel-toggle {
+      display: inline-flex;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      overflow: hidden;
+      background: #fff;
+    }
+    .channel-toggle button {
+      border: 0;
+      background: transparent;
+      padding: 6px 10px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .channel-toggle button.on { background: var(--palm); color: white; }
+    .wa-note { margin: 8px 0 0; color: var(--gold-deep); font-size: 13px; }
+    .actions { display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
+    .promo-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+    .ticks { color: #8d8376; letter-spacing: -1px; font-weight: 700; margin-left: 4px; }
+    .ticks.read { color: #1d6fd6; }
+    .ticks.failed { color: var(--clay); letter-spacing: 0; font-weight: 600; }
     .pill, .verdict {
       border-radius: 999px;
       padding: 6px 12px;
@@ -370,11 +400,23 @@
       <p class="where" id="where">Lagos · Abuja · Port Harcourt</p>
       <div class="grow"></div>
       <div class="header-actions">
+        <div class="channel-toggle" id="channel-toggle" role="group" aria-label="Channel">
+          <button type="button" data-action="channel" data-channel="simulator" class="on">Simulator</button>
+          <button type="button" data-action="channel" data-channel="whatsapp">WhatsApp live</button>
+        </div>
         <span class="pill" id="mode">Mock mode</span>
+        <form id="admin-login" class="admin-form" hidden>
+          <label class="sr" for="admin-token">Admin token</label>
+          <input id="admin-token" type="password" placeholder="Admin token" autocomplete="current-password" />
+          <button type="submit" class="quiet">Unlock</button>
+        </form>
+        <span class="pill" id="admin-state" hidden>Admin</span>
         <button type="button" class="quiet" id="reset" data-action="reset">Reset demo</button>
       </div>
     </header>
     <p class="banner">Synthetic demo for the hackathon. Shops, customers, and phone numbers are fictional. Do not message them. Scenario date <span id="asof">27 Oct 2026</span>.</p>
+    <p class="sub" id="wa-status">Simulator · sends stay on this page. Fictional numbers are never messaged.</p>
+    <p class="wa-note" id="wa-note" hidden></p>
     <p class="error" id="error" hidden></p>
     <section class="metrics" id="metrics" aria-label="Metrics"></section>
     <div class="layout">
@@ -444,6 +486,7 @@
       promoNote: "",
       promoError: false,
       cardVersion: null,
+      whatsapp: null,
     };
     const DEMO_CUSTOMER_ID = 184;
 
@@ -494,7 +537,8 @@
     }
 
     async function api(path, options) {
-      const response = await fetch(path, options);
+      const opts = Object.assign({}, options || {}, {credentials: "same-origin"});
+      const response = await fetch(path, opts);
       const text = await response.text();
       let body = null;
       try { body = text ? JSON.parse(text) : null; } catch { body = {detail: text}; }
@@ -650,8 +694,53 @@
         button.textContent = state.busy ? "Working…" : "Send win-back";
         button.disabled = state.busy;
       }
-      row.append(copy, button);
+      const waButton = document.createElement("button");
+      waButton.type = "button";
+      waButton.className = "quiet";
+      waButton.dataset.action = "wa-winback";
+      waButton.textContent = state.busy ? "Sending…" : "Send on WhatsApp";
+      waButton.disabled = state.busy || !whatsAppReady();
+      waButton.title = whatsAppReady()
+        ? "Send the win-back to the demo phone"
+        : "Switch to WhatsApp live once the env is set";
+      const actions = el("div", "actions");
+      actions.append(button, waButton);
+      row.append(copy, actions);
       host.append(row);
+    }
+
+    function whatsAppReady() {
+      const wa = state.whatsapp;
+      return Boolean(wa && wa.channel === "whatsapp" && wa.configured);
+    }
+
+    function renderWhatsApp() {
+      const wa = state.whatsapp || {};
+      for (const button of document.querySelectorAll("#channel-toggle button")) {
+        button.classList.toggle("on", button.dataset.channel === (wa.channel || "simulator"));
+      }
+      const node = document.getElementById("wa-status");
+      node.textContent = whatsAppStatusLine(wa);
+    }
+
+    function whatsAppStatusLine(wa) {
+      if (!wa || wa.channel !== "whatsapp") {
+        return "Simulator · sends stay on this page. Fictional numbers are never messaged.";
+      }
+      if (wa.missing && wa.missing.length) {
+        return "WhatsApp live · missing " + wa.missing.join(", ");
+      }
+      const windowLabel = wa.window_open ? "window open" : "window closed";
+      const last = wa.last_status ? "last status " + wa.last_status : "no delivery status yet";
+      const who = wa.demo_to_masked ? "demo " + wa.demo_to_masked : "demo number missing";
+      return "WhatsApp live · configured · " + windowLabel + " · " + last + " · " + who;
+    }
+
+    function showWhatsAppResult(result) {
+      const note = document.getElementById("wa-note");
+      const text = (result && result.note) || (result && result.to_masked ? "Sent on WhatsApp to " + result.to_masked + "." : "");
+      note.textContent = text;
+      note.hidden = !text;
     }
 
     function renderThread() {
@@ -672,12 +761,29 @@
           bubble.append(el("span", "voice-cap", `Voice note · ${message.voice.model} · ${message.voice.latency_ms} ms`));
         }
         bubble.append(el("p", null, message.text));
+        if (message.whatsapp && message.whatsapp.note) {
+          bubble.append(el("span", "voice-cap", message.whatsapp.note));
+        }
         const who = message.role === "shop" ? "Shop" : "Customer";
         const intent = message.intent ? ` · ${message.intent}` : "";
-        bubble.append(el("span", "stamp", `${who}${intent} · ${clock(message.ts)}`));
+        const tail = message.whatsapp && message.whatsapp.wamid_tail ? ` · …${message.whatsapp.wamid_tail}` : "";
+        const stamp = el("span", "stamp", `${who}${intent} · ${clock(message.ts)}${tail}`);
+        const ticks = tickSpan(message.whatsapp && message.whatsapp.status);
+        if (ticks) stamp.append(ticks);
+        bubble.append(stamp);
         host.append(bubble);
       }
       host.scrollTop = 0;
+    }
+
+    function tickSpan(status) {
+      if (!status) return null;
+      if (status === "failed") return el("span", "ticks failed", "failed");
+      if (status === "sent") return el("span", "ticks", "✓");
+      if (status === "delivered" || status === "read") {
+        return el("span", status === "read" ? "ticks read" : "ticks", "✓✓");
+      }
+      return null;
     }
 
     function renderPromo() {
@@ -704,7 +810,18 @@
         event.stopPropagation();
         sendPromo();
       });
-      copy.append(button);
+      const waCard = document.createElement("button");
+      waCard.type = "button";
+      waCard.className = "quiet";
+      waCard.dataset.action = "wa-promo";
+      waCard.textContent = "Send on WhatsApp";
+      waCard.disabled = state.promoBusy || state.busy || !whatsAppReady();
+      waCard.title = whatsAppReady()
+        ? "Upload the promo card and send it to the demo phone"
+        : "Switch to WhatsApp live once the env is set";
+      const actions = el("div", "promo-actions");
+      actions.append(button, waCard);
+      copy.append(actions);
       const note = el("p", state.promoError ? "promo-error" : "fine", state.promoNote || "");
       note.id = "promo-note";
       note.hidden = !state.promoNote;
@@ -738,6 +855,10 @@
       if (entry.kind === "model_call" && payload.task === "promo_card") {
         return `${payload.model} · offer ${payload.offer_id} · ${payload.latency_ms} ms`;
       }
+      const tail = payload.wamid_tail ? ` · …${payload.wamid_tail}` : "";
+      if (entry.kind === "whatsapp_send") return `${payload.kind || "send"} · ${payload.to_masked || ""}${tail}`;
+      if (entry.kind === "whatsapp_status") return `${payload.status || "status"} · ${payload.to_masked || ""}${tail}`;
+      if (entry.kind === "whatsapp_inbound") return `${payload.kind || "inbound"} · ${payload.from_masked || ""}${tail}`;
       if (entry.kind === "tool_call") return payload.name || "tool";
       if (entry.kind === "tool_result") return `${payload.name || "tool"} ${payload.ok ? "ok" : "failed"}`;
       if (entry.kind === "model_call") return `${payload.task || "chat"} · ${payload.latency_ms || 0} ms`;
@@ -793,7 +914,14 @@
       state.thread = await api(`/v1/customers/${id}/thread`);
       state.selected = state.thread.customer;
       rememberCustomer(state.selected);
+      await api("/v1/whatsapp/customer", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({customer_id: id}),
+      });
+      state.whatsapp = await api("/v1/whatsapp/status");
       setBusy(false);
+      renderWhatsApp();
       renderShops();
       renderPerson();
       renderThread();
@@ -904,6 +1032,54 @@
       }
     }
 
+    async function refreshWhatsApp() {
+      state.whatsapp = await api("/v1/whatsapp/status");
+      renderWhatsApp();
+      renderPerson();
+      renderPromo();
+    }
+
+    async function sendWinbackWhatsApp() {
+      if (!state.selected || state.busy || !whatsAppReady()) return;
+      setBusy(true);
+      setError("");
+      renderPerson();
+      try {
+        const result = await api(`/v1/customers/${state.selected.id}/whatsapp`, {method: "POST"});
+        showWhatsAppResult(result);
+        await refreshThread();
+        await refreshWhatsApp();
+        await refreshSide();
+      } catch (err) {
+        setError(err.message);
+        try {
+          await refreshThread();
+          await refreshSide();
+        } catch {
+          // Keep the send error on screen.
+        }
+      } finally {
+        setBusy(false);
+        renderPerson();
+        renderPromo();
+      }
+    }
+
+    async function sendPromoWhatsApp() {
+      const offer = state.thread && state.thread.offer;
+      if (!offer || state.promoBusy || state.busy || !whatsAppReady()) return;
+      setError("");
+      try {
+        const result = await api(`/v1/offers/${offer.offer_id}/whatsapp`, {method: "POST"});
+        showWhatsAppResult(result);
+        await refreshThread();
+        await refreshWhatsApp();
+        await refreshSide();
+      } catch (err) {
+        setError(err.message);
+      }
+    }
+
     async function verifyChain() {
       setError("");
       const result = await api("/v1/actions/verify", {method: "POST"});
@@ -942,14 +1118,31 @@
       }
     }
 
+    async function refreshAdmin() {
+      try {
+        const session = await api("/v1/admin/session");
+        const form = document.getElementById("admin-login");
+        const badge = document.getElementById("admin-state");
+        const required = Boolean(session && session.required);
+        const admin = Boolean(session && session.admin);
+        form.hidden = !required || admin;
+        badge.hidden = !required || !admin;
+      } catch (err) {
+        // The shop view still loads when the session check fails.
+      }
+    }
+
     async function boot() {
-      const [health, retailers, listed, metrics, actions] = await Promise.all([
+      const [health, retailers, listed, metrics, actions, whatsapp] = await Promise.all([
         api("/health"),
         api("/v1/retailers"),
         api("/v1/customers/at-risk?limit=500"),
         api("/v1/metrics"),
         api("/v1/actions?limit=80"),
+        api("/v1/whatsapp/status"),
       ]);
+      state.whatsapp = whatsapp;
+      renderWhatsApp();
       document.getElementById("mode").textContent = health.llm_mode === "live" ? "Live Muse" : "Mock mode";
       document.getElementById("asof").textContent = health.scenario_as_of || "27 Oct 2026";
       state.retailers = retailers.retailers || [];
@@ -977,6 +1170,7 @@
       renderPromo();
       renderLog();
       setBusy(state.busy);
+      await refreshAdmin();
     }
 
     document.getElementById("shops").addEventListener("click", (event) => {
@@ -995,11 +1189,40 @@
         renderShops();
       } else if (action === "winback") {
         sendWinback();
+      } else if (action === "wa-winback") {
+        sendWinbackWhatsApp();
+      } else if (action === "wa-promo") {
+        sendPromoWhatsApp();
+      } else if (action === "channel") {
+        api("/v1/whatsapp/channel", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({channel: button.dataset.channel}),
+        }).then((status) => {
+          state.whatsapp = status;
+          renderWhatsApp();
+          renderPerson();
+          renderPromo();
+        }).catch((err) => setError(err.message));
       } else if (action === "verify") {
         verifyChain().catch((err) => setError(err.message));
       } else if (action === "reset") {
         resetDemo();
       }
+    });
+
+    document.getElementById("admin-login").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const token = document.getElementById("admin-token").value;
+      api("/v1/admin/login", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({token}),
+      }).then(() => {
+        document.getElementById("admin-token").value = "";
+        setError("");
+        return refreshAdmin();
+      }).catch((err) => setError(err.message));
     });
 
     document.getElementById("composer").addEventListener("submit", (event) => {
@@ -1024,6 +1247,16 @@
       state.query = event.target.value;
       renderShops();
     });
+
+    let polling = false;
+    setInterval(() => {
+      if (polling || state.busy || state.promoBusy) return;
+      if (!state.whatsapp || state.whatsapp.channel !== "whatsapp") return;
+      polling = true;
+      const jobs = [refreshWhatsApp()];
+      if (state.selected) jobs.push(refreshThread());
+      Promise.all(jobs).catch(() => {}).finally(() => { polling = false; });
+    }, 5000);
 
     boot().catch((err) => setError(err.message));
   </script>

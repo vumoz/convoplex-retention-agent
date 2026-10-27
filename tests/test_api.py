@@ -14,10 +14,26 @@ def _app(shop, tmp_path, **extra):
         output_dir=tmp_path / "output",
         llm_mode=extra.get("llm_mode") or "mock",
         whatsapp_verify_token=extra.get("whatsapp_verify_token"),
+        whatsapp_token=extra.get("whatsapp_token"),
+        whatsapp_phone_number_id=extra.get("whatsapp_phone_number_id"),
+        whatsapp_app_secret=extra.get("whatsapp_app_secret"),
+        whatsapp_demo_to=extra.get("whatsapp_demo_to"),
+        graph_api_version=extra.get("graph_api_version") or "v21.0",
+        channel=extra.get("channel") or "simulator",
         meta_api_key=extra.get("meta_api_key"),
         meta_base_url=extra.get("meta_base_url") or "https://api.meta.ai/v1",
+        admin_token=extra.get("admin_token"),
+        database_url=extra.get("database_url"),
+        meta_daily_cap=extra.get("meta_daily_cap", 80),
+        try_ip_limit=extra.get("try_ip_limit", 60),
+        try_window_seconds=extra.get("try_window_seconds", 3600),
     )
-    return create_app(settings, generate_if_missing=False)
+    app = create_app(settings, generate_if_missing=False)
+    if "whatsapp_http" in extra:
+        app.state.whatsapp_http = extra["whatsapp_http"]
+    if "http_client" in extra:
+        app.state.http_client = extra["http_client"]
+    return app
 
 
 def test_at_risk_winback_reply_and_metrics(shop, tmp_path):
@@ -127,7 +143,7 @@ def test_usage_totals_sum_logged_model_calls():
     }
 
 
-def test_whatsapp_webhook_stays_a_stub(shop, tmp_path):
+def test_whatsapp_webhook_verifies_and_ignores_other_numbers(shop, tmp_path):
     client = TestClient(_app(shop, tmp_path, whatsapp_verify_token="hackathon-token"))
     challenge = client.get(
         "/v1/whatsapp/webhook",
@@ -166,9 +182,10 @@ def test_whatsapp_webhook_stays_a_stub(shop, tmp_path):
     )
     assert inbound.status_code == 200
     payload = inbound.json()
-    assert payload["status"] == "stub"
+    assert payload["status"] == "ok"
     assert payload["processed"] is False
-    assert payload["messages"][0]["text"] == "Yes o"
+    assert payload["ignored"] == 1
+    assert "2348030001101" not in inbound.text
 
     unconfigured = TestClient(_app(shop, tmp_path))
     assert unconfigured.get("/v1/whatsapp/webhook").status_code == 501

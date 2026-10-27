@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from convoplex.config import Settings
 from convoplex.demo import format_demo, run_demo
 from convoplex.integrations.images import clear_promo_cards
 from convoplex.llm import LLMError
-from convoplex.synthetic.generate import DEFAULT_CUSTOMERS, DEFAULT_SEED, generate
+from convoplex.synthetic.generate import DEFAULT_CUSTOMERS, DEFAULT_SEED, generate, reset_and_seed
+from convoplex.tunnel import callback_url, format_webhook_banner, start_quick_tunnel
+from convoplex.whatsapp_flow import run_check, run_customer, run_send_template, run_winback, store_for
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -47,18 +50,74 @@ def main(argv: list[str] | None = None) -> int:
     verify_cmd = sub.add_parser("verify", help="Check the hash-chained action log")
     verify_cmd.add_argument("path", nargs="?", default=None)
 
+    whatsapp_cmd = sub.add_parser("whatsapp", help="WhatsApp Cloud API test-number commands")
+    wa_sub = whatsapp_cmd.add_subparsers(dest="wa_cmd", required=True)
+    wa_sub.add_parser("check", help="GET the phone number and print the display number and quality")
+    wa_sub.add_parser("send-template", help="Send the hello_world template to WHATSAPP_DEMO_TO")
+    customer_cmd = wa_sub.add_parser("customer", help="Map inbound WhatsApp messages to a synthetic customer")
+    customer_cmd.add_argument("customer_id", type=int)
+    winback_cmd = wa_sub.add_parser(
+        "winback",
+        help="Send the win-back for a synthetic customer on the demo phone",
+    )
+    winback_cmd.add_argument("--customer", type=int, required=True, help="Synthetic customer id")
+    winback_cmd.add_argument("--lang", choices=("en", "pcm"), default=None, help="Language for a new win-back draft")
+    winback_cmd.add_argument(
+        "--promo-card",
+        action="store_true",
+        help="Also draw the promo card, if needed, and send it the same way as the offer endpoint",
+    )
+
     serve_cmd = sub.add_parser("serve", help="Run the FastAPI app")
-    serve_cmd.add_argument("--host", default="127.0.0.1")
-    serve_cmd.add_argument("--port", type=int, default=8000)
+    serve_cmd.add_argument(
+        "--host",
+        default=None,
+        help="Bind address. Defaults to 0.0.0.0 when PORT is set, otherwise 127.0.0.1.",
+    )
+    serve_cmd.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Bind port. Defaults to the PORT env var, otherwise 8000.",
+    )
+    serve_cmd.add_argument(
+        "--channel",
+        choices=("simulator", "whatsapp"),
+        default=None,
+        help="simulator (default) or whatsapp. Live mode requires WHATSAPP_APP_SECRET and WHATSAPP_DEMO_TO.",
+    )
+    serve_cmd.add_argument(
+        "--tunnel",
+        action="store_true",
+        help="Start a cloudflared quick tunnel and print the Meta callback URL.",
+    )
 
     args = parser.parse_args(argv)
     settings = Settings.from_env()
 
     if args.cmd == "generate":
+        if settings.database_url:
+            from convoplex.actionlog import open_action_log
+            from convoplex.db import open_db
+
+            conn = open_db(settings)
+            try:
+                reset_and_seed(conn, postgres=True, n_customers=args.customers, seed=args.seed)
+            finally:
+                conn.close()
+            open_action_log(settings).clear()
+            try:
+                clear_promo_cards(settings.output_dir)
+            except OSError:
+                pass
+            store_for(settings).reset()
+            print("Wrote synthetic database to Postgres")
+            return 0
         path = generate(settings.db_path, n_customers=args.customers, seed=args.seed)
         if settings.log_path.exists():
             settings.log_path.unlink()
         clear_promo_cards(settings.output_dir)
+        store_for(settings).reset()
         print(f"Wrote synthetic database to {path}")
         return 0
 
@@ -86,26 +145,138 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if result.log_ok else 1
 
     if args.cmd == "verify":
-        from convoplex.actionlog import ActionLog
+        from convoplex.actionlog import ActionLog, open_action_log
 
-        path = args.path or settings.log_path
-        result = ActionLog(path).verify()
+        if args.path:
+            result = ActionLog(args.path).verify()
+        else:
+            result = open_action_log(settings).verify()
         if result.ok:
             print(f"OK {result.entries} entries")
             return 0
         print(f"FAIL {result.error}", file=sys.stderr)
         return 1
 
+    if args.cmd == "whatsapp":
+        if args.wa_cmd == "check":
+            return run_check(settings)
+        if args.wa_cmd == "send-template":
+            return run_send_template(settings)
+        if args.wa_cmd == "customer":
+            return run_customer(settings, args.customer_id)
+        if args.wa_cmd == "winback":
+            return run_winback(
+                settings,
+                args.customer,
+                language=args.lang,
+                promo_card=args.promo_card,
+            )
+        parser.error(f"unknown whatsapp command {args.wa_cmd}")
+        return 2
+
     if args.cmd == "serve":
         import uvicorn
 
         from convoplex.api import create_app
 
-        uvicorn.run(create_app(settings), host=args.host, port=args.port)
+        try:
+            args.host, args.port = _serve_bind(args.host, args.port)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        if args.channel:
+            settings = settings.with_channel(args.channel)
+        refusal = _live_app_secret_error(settings)
+        if refusal:
+            print(refusal, file=sys.stderr)
+            return 1
+        app = create_app(settings)
+        _announce_webhook(args, settings)
+        uvicorn.run(app, host=args.host, port=args.port)
         return 0
 
     parser.error(f"unknown command {args.cmd}")
     return 2
+
+
+def _serve_bind(host: str | None, port: int | None) -> tuple[str, int]:
+    """Resolve the listen address. PORT selects the platform port and 0.0.0.0."""
+    env_port = (os.environ.get("PORT") or "").strip()
+    if port is None and env_port:
+        try:
+            port = int(env_port)
+        except ValueError as exc:
+            raise ValueError("PORT must be an integer.") from exc
+    if port is None:
+        port = 8000
+    if port < 1 or port > 65535:
+        raise ValueError("PORT must be an integer from 1 to 65535.")
+    if host is None:
+        host = "0.0.0.0" if env_port else "127.0.0.1"
+    return host, port
+
+
+def _public_base_url() -> str | None:
+    """PUBLIC_BASE_URL wins. On Vercel, the platform host is the fallback."""
+    base = (os.environ.get("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    if base:
+        return base
+    for name in ("VERCEL_PROJECT_PRODUCTION_URL", "VERCEL_URL"):
+        host = (os.environ.get(name) or "").strip().rstrip("/")
+        if not host:
+            continue
+        host = host.removeprefix("https://").removeprefix("http://")
+        return "https://" + host
+    return None
+
+
+def _live_app_secret_error(settings: Settings) -> str | None:
+    """Live WhatsApp must not serve a public webhook that accepts unsigned posts."""
+    if settings.channel == "whatsapp" and not settings.whatsapp_app_secret:
+        return (
+            "Refusing to start: WhatsApp live requires WHATSAPP_APP_SECRET. "
+            "Without it, anyone who can reach the webhook could post fake inbound messages. "
+            "Set WHATSAPP_APP_SECRET from the Meta app, or serve with the simulator channel."
+        )
+    return None
+
+
+def _announce_webhook(args, settings: Settings) -> None:
+    """Print the callback URL and verify token when WhatsApp, a public host, or a tunnel is requested."""
+    if settings.channel != "whatsapp" and not args.tunnel and not _public_base_url():
+        return
+    tunnel = None
+    public = None
+    if args.tunnel:
+        tunnel, public = start_quick_tunnel(args.port, log_path=settings.output_dir / "cloudflared.log")
+    configured = _public_base_url()
+    host = "127.0.0.1" if args.host in {"0.0.0.0", "::"} else args.host
+    base = public or configured or f"http://{host}:{args.port}"
+    print(
+        format_webhook_banner(
+            callback=callback_url(base),
+            verify_token=settings.whatsapp_verify_token,
+            public=bool(public or configured),
+        )
+    )
+    if args.tunnel and public is None:
+        if tunnel is None:
+            print("cloudflared is not on PATH. Install it from https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/")
+        else:
+            print(
+                "cloudflared did not report a public URL yet. "
+                f"Paste the https origin from {settings.output_dir / 'cloudflared.log'}."
+            )
+    if tunnel is not None:
+        # The tunnel is a child process. uvicorn blocks; stop cloudflared when it returns.
+        import atexit
+
+        atexit.register(_stop_tunnel, tunnel)
+
+
+def _stop_tunnel(proc) -> None:
+    if proc.poll() is None:
+        proc.terminate()
 
 
 if __name__ == "__main__":

@@ -28,13 +28,37 @@ class VoiceError(LLMError):
     """The audio cannot be prepared. Distinct from an upstream model failure."""
 
 
+def ffmpeg_binary() -> str | None:
+    """PATH ffmpeg first, then the imageio-ffmpeg static build bundled for Vercel.
+
+    A PATH hit stays the name ``ffmpeg`` so the documented command does not pick
+    up a machine-specific absolute path. The bundled binary is an absolute path
+    because it is not installed on PATH.
+    """
+    if shutil.which("ffmpeg"):
+        return "ffmpeg"
+    return _bundled_ffmpeg()
+
+
+def _bundled_ffmpeg() -> str | None:
+    try:
+        import imageio_ffmpeg
+    except ImportError:
+        return None
+    try:
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return None
+
+
 def ffmpeg_to_wav_command(src: str, dst: str) -> list[str]:
     """WhatsApp voice notes arrive as OGG/Opus. Meta ASR wants mono 16-bit PCM WAV."""
-    return ["ffmpeg", "-y", "-i", src, "-ac", "1", "-ar", "16000", "-sample_fmt", "s16", dst]
+    binary = ffmpeg_binary() or "ffmpeg"
+    return [binary, "-y", "-i", src, "-ac", "1", "-ar", "16000", "-sample_fmt", "s16", dst]
 
 
 def ffmpeg_available() -> bool:
-    return shutil.which("ffmpeg") is not None
+    return ffmpeg_binary() is not None
 
 
 def _missing_ffmpeg_message() -> str:
