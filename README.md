@@ -263,6 +263,55 @@ On the dashboard, **Simulator / WhatsApp live** shows whether env is missing, wh
 
 Tests never call Graph. They use a fake transport. `pytest` covers request shapes, the allow-list, signature checks, dedupe, the 24-hour window, and inbound text and audio.
 
+## Deploy to Vercel
+
+The public app is one Vercel Python function. `app.py` exports `app = create_app()`. `vercel.json` turns on Fluid Compute and sets `maxDuration` to 300 seconds so a Hobby deployment stays inside the platform maximum. That budget covers a cold start that seeds the synthetic book, plus a Muse image or voice call.
+
+Vercel function duration, with Fluid Compute:
+
+| Plan | Default | Maximum |
+| --- | --- | --- |
+| Hobby | 300 seconds | 300 seconds |
+| Pro | 300 seconds | 800 seconds |
+
+Pro also has an extended-duration beta of up to 1800 seconds for Python 3.12, 3.13, and 3.14. This repo pins `functions.app.py.maxDuration` at 300 so Hobby can deploy it. On Pro, raise that value in `vercel.json` (up to 800, or the extended beta limit) if image or voice calls need longer than five minutes.
+
+Local runs and tests stay on SQLite and the JSONL action log. Set `DATABASE_URL` and the same process uses Postgres: the shop, the hash-chained action log, promo-card bytes, the WhatsApp session (24-hour window and message-id hashes), and the rate-limit counters. Install Neon from the Vercel Marketplace and use the `DATABASE_URL` it writes. If the integration also offers a pooled connection string, use that one so serverless instances share Neon's pooler. The first request seeds the 500 synthetic customers when the customers table is empty.
+
+Promo cards are stored in Postgres (`promo_cards.image`), not on the function disk and not in Vercel Blob, so there is no Blob token to set. A local file is still written when the disk is writable. OGG voice notes are converted with `ffmpeg` from `PATH`, or with the static binary from `imageio-ffmpeg` when `PATH` has none. The WhatsApp webhook returns 200 before the reply is generated. FastAPI `BackgroundTasks` keep running after that response on Vercel Python (the `waitUntil` equivalent), so the model call stays inside the same invocation without holding Meta's webhook timeout.
+
+`/healthz` returns 200, or 503 when `DATABASE_URL` is set and the database does not answer. `/health` is the fuller dashboard check. Responses send `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, and a Content-Security-Policy that allows the dashboard's inline script. Request bodies over 20 MB are rejected with 413. Access logs are one JSON line per request (method, path, status) and omit query strings, so `hub.verify_token` is not logged.
+
+When `ADMIN_TOKEN` is set, these routes require it via `Authorization: Bearer`, `X-Admin-Token`, or the dashboard **Unlock** form (httponly cookie): reset demo, channel switch, WhatsApp sends, and the demo-customer mapping. The public page stays readable. Win-back, reply, voice, and promo-card are the try-it path: `TRY_IP_LIMIT` requests per IP per `TRY_WINDOW_SECONDS` (default 60 per 3600 seconds). Live Meta chat, image, and transcription calls share `META_DAILY_CAP` (default 80 per UTC day). Past the cap, chat and voice fall back to the mock. A promo card past the cap returns 429 unless the caller is the admin, who bypasses the cap. The webhook is not rate-limited and does not require the admin token. It still requires a valid `X-Hub-Signature-256` when the channel is WhatsApp live. Leave `ADMIN_TOKEN` unset on your laptop: the local API stays open, which is what the tests expect.
+
+In the Vercel project, set the secrets in the dashboard (not in git):
+
+| Variable | Value |
+| --- | --- |
+| `META_API_KEY` | Muse key. Secret. |
+| `WHATSAPP_TOKEN` | Cloud API token. Secret. |
+| `WHATSAPP_APP_SECRET` | Meta app secret. Required for the live webhook. Secret. |
+| `WHATSAPP_VERIFY_TOKEN` | The string you choose for the handshake. Secret. |
+| `WHATSAPP_DEMO_TO` | The only number the agent will message. Secret. |
+| `ADMIN_TOKEN` | Unlocks reset, the channel switch, and WhatsApp sends. Secret. |
+| `WHATSAPP_PHONE_NUMBER_ID` | `1150414038145295` |
+| `CONVOPLEX_CHANNEL` | `whatsapp` for live sends. `simulator` keeps sends on the page. |
+| `GRAPH_API_VERSION` | Optional. Default `v21.0`. |
+| `DATABASE_URL` | Set by the Neon Marketplace integration. |
+| `META_DAILY_CAP` | Optional. Default `80`. |
+| `TRY_IP_LIMIT` | Optional. Default `60`. |
+| `TRY_WINDOW_SECONDS` | Optional. Default `3600`. |
+
+`PUBLIC_BASE_URL` overrides the host when you want a custom domain in the printed callback. Otherwise the app uses `VERCEL_PROJECT_PRODUCTION_URL`, then `VERCEL_URL`, both set by Vercel.
+
+Webhook callback, subscribed to the `messages` field:
+
+```text
+https://<project>.vercel.app/v1/whatsapp/webhook
+```
+
+Replace `<project>` with the Vercel project name. Paste `WHATSAPP_VERIFY_TOKEN` into the Meta app as the verify token.
+
 ## What was not run live
 
 Voice, image, and WhatsApp live calls were not executed in this environment. `META_API_KEY` and the WhatsApp secrets are not available here. Mock mode and the fake Graph transport cover the offline path. The live commands above are what to run on a machine that has the keys and a test number.

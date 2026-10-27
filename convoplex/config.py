@@ -64,6 +64,11 @@ class Settings:
     whatsapp_demo_to: str | None = field(default=None, repr=False)
     graph_api_version: str = DEFAULT_GRAPH_VERSION
     channel: str = "simulator"
+    database_url: str | None = field(default=None, repr=False)
+    admin_token: str | None = field(default=None, repr=False)
+    meta_daily_cap: int = 80
+    try_ip_limit: int = 60
+    try_window_seconds: int = 3600
 
     def with_llm_mode(self, mode: str) -> Settings:
         resolved = resolve_llm_mode(mode, api_key=self.meta_api_key)
@@ -110,4 +115,22 @@ class Settings:
             whatsapp_demo_to=(os.environ.get("WHATSAPP_DEMO_TO") or "").strip() or None,
             graph_api_version=clean_graph_version(os.environ.get("GRAPH_API_VERSION")),
             channel=clean_channel(os.environ.get("CONVOPLEX_CHANNEL")),
+            database_url=(os.environ.get("DATABASE_URL") or "").strip() or None,
+            admin_token=(os.environ.get("ADMIN_TOKEN") or "").strip() or None,
+            meta_daily_cap=_positive_int("META_DAILY_CAP", 80),
+            try_ip_limit=_positive_int("TRY_IP_LIMIT", 60),
+            try_window_seconds=_positive_int("TRY_WINDOW_SECONDS", 3600),
         )
+
+
+def _positive_int(name: str, default: int) -> int:
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+    if value < 0:
+        raise ValueError(f"{name} must be zero or greater")
+    return value

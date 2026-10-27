@@ -22,6 +22,11 @@ def _app(shop, tmp_path, **extra):
         channel=extra.get("channel") or "simulator",
         meta_api_key=extra.get("meta_api_key"),
         meta_base_url=extra.get("meta_base_url") or "https://api.meta.ai/v1",
+        admin_token=extra.get("admin_token"),
+        database_url=extra.get("database_url"),
+        meta_daily_cap=extra.get("meta_daily_cap", 80),
+        try_ip_limit=extra.get("try_ip_limit", 60),
+        try_window_seconds=extra.get("try_window_seconds", 3600),
     )
     app = create_app(settings, generate_if_missing=False)
     if "whatsapp_http" in extra:

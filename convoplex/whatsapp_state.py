@@ -113,11 +113,18 @@ def stamp_from_message(timestamp: str | None, now: datetime) -> datetime:
     return parsed
 
 
+WHATSAPP_STATE_KEY = "whatsapp_state"
+
+
 class WhatsAppStore:
-    def __init__(self, path: Path | str):
+    def __init__(self, path: Path | str, *, connect_fn=None, postgres: bool = False):
         self.path = Path(path)
+        self.connect_fn = connect_fn
+        self.postgres = postgres
 
     def load(self) -> dict:
+        if self.connect_fn is not None:
+            return self._load_db()
         if not self.path.exists():
             return empty_state()
         with self.path.open("r", encoding="utf-8") as handle:
@@ -145,6 +152,8 @@ class WhatsAppStore:
         return state
 
     def update(self, mutate) -> dict:
+        if self.connect_fn is not None:
+            return self._update_db(mutate)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a+", encoding="utf-8") as handle:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
@@ -251,5 +260,129 @@ class WhatsAppStore:
         return {str(key): str(value) for key, value in raw.items() if isinstance(value, str)}
 
     def reset(self) -> None:
+        if self.connect_fn is not None:
+            conn = self._connect()
+            try:
+                self._begin(conn)
+                conn.execute("DELETE FROM app_kv WHERE key = ?", (WHATSAPP_STATE_KEY,))
+                self._commit(conn)
+            except Exception:
+                self._rollback(conn)
+                raise
+            finally:
+                conn.close()
+            return
         if self.path.exists():
             self.path.unlink()
+
+    def _load_db(self) -> dict:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT value FROM app_kv WHERE key = ?",
+                (WHATSAPP_STATE_KEY,),
+            ).fetchone()
+        finally:
+            conn.close()
+        state = _state_from_raw(row["value"] if row else "")
+        if canonicalize_state(state):
+            self._write_db(state)
+        return state
+
+    def _update_db(self, mutate) -> dict:
+        conn = self._connect()
+        try:
+            self._begin(conn)
+            conn.execute(
+                "INSERT INTO app_kv (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING",
+                (WHATSAPP_STATE_KEY, "{}"),
+            )
+            if self.postgres:
+                row = conn.execute(
+                    "SELECT value FROM app_kv WHERE key = ? FOR UPDATE",
+                    (WHATSAPP_STATE_KEY,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT value FROM app_kv WHERE key = ?",
+                    (WHATSAPP_STATE_KEY,),
+                ).fetchone()
+            state = _state_from_raw(row["value"] if row else "")
+            canonicalize_state(state)
+            mutate(state)
+            canonicalize_state(state)
+            text = json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+            conn.execute(
+                "UPDATE app_kv SET value = ? WHERE key = ?",
+                (text, WHATSAPP_STATE_KEY),
+            )
+            self._commit(conn)
+            return state
+        except Exception:
+            self._rollback(conn)
+            raise
+        finally:
+            conn.close()
+
+    def _write_db(self, state: dict) -> None:
+        text = json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+        conn = self._connect()
+        try:
+            self._begin(conn)
+            conn.execute(
+                """
+                INSERT INTO app_kv (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value
+                """,
+                (WHATSAPP_STATE_KEY, text),
+            )
+            self._commit(conn)
+        except Exception:
+            self._rollback(conn)
+            raise
+        finally:
+            conn.close()
+
+    def _connect(self):
+        conn = self.connect_fn()
+        if not self.postgres:
+            conn.isolation_level = None
+        return conn
+
+    def _begin(self, conn) -> None:
+        if self.postgres:
+            return
+        conn.execute("BEGIN IMMEDIATE")
+
+    def _commit(self, conn) -> None:
+        if self.postgres:
+            conn.commit()
+            return
+        conn.execute("COMMIT")
+
+    def _rollback(self, conn) -> None:
+        try:
+            if self.postgres:
+                conn.rollback()
+            else:
+                conn.execute("ROLLBACK")
+        except Exception:
+            return
+
+
+def _state_from_raw(raw: str | None) -> dict:
+    if not raw or not str(raw).strip():
+        return empty_state()
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return empty_state()
+    if not isinstance(payload, dict):
+        return empty_state()
+    state = empty_state()
+    state.update(payload)
+    if not isinstance(state.get("seen_ids"), list):
+        state["seen_ids"] = []
+    if not isinstance(state.get("statuses"), dict):
+        state["statuses"] = {}
+    return state

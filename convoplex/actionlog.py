@@ -129,3 +129,151 @@ class ActionLog:
         except ChainError as exc:
             return VerifyResult(False, 0, str(exc), None)
         return verify_entries(entries)
+
+
+class DbActionLog:
+    """Hash chain stored in the shop database.
+
+    Used when DATABASE_URL is set, so a serverless instance does not need the
+    local JSONL file. SQLite tests construct this directly. Postgres locks
+    action_lock; SQLite uses BEGIN IMMEDIATE on an autocommit connection.
+    """
+
+    def __init__(self, connect_fn, *, postgres: bool = False):
+        self.connect_fn = connect_fn
+        self.postgres = postgres
+
+    def append(self, *, kind: str, actor: str, payload: dict, ts: str | None = None) -> dict:
+        if not isinstance(payload, dict):
+            raise TypeError("payload must be a dict")
+        safe_payload = json.loads(json.dumps(payload, ensure_ascii=False))
+        stamp = ts or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+        conn = self._connect()
+        try:
+            self._begin(conn)
+            existing = self._read(conn)
+            prev = existing[-1]["hash"] if existing else GENESIS
+            seq = (int(existing[-1]["seq"]) + 1) if existing else 1
+            entry = {
+                "seq": seq,
+                "ts": stamp,
+                "kind": kind,
+                "actor": actor,
+                "payload": safe_payload,
+                "prev_hash": prev,
+            }
+            entry["hash"] = compute_hash(entry)
+            conn.execute(
+                """
+                INSERT INTO action_log (seq, ts, kind, actor, payload, prev_hash, hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    seq,
+                    stamp,
+                    kind,
+                    actor,
+                    json.dumps(safe_payload, ensure_ascii=False, separators=(",", ":")),
+                    prev,
+                    entry["hash"],
+                ),
+            )
+            self._commit(conn)
+            return entry
+        except Exception:
+            self._rollback(conn)
+            raise
+        finally:
+            conn.close()
+
+    def read_all(self) -> list[dict]:
+        conn = self._connect()
+        try:
+            return self._read(conn)
+        finally:
+            conn.close()
+
+    def verify(self) -> VerifyResult:
+        try:
+            entries = self.read_all()
+        except ChainError as exc:
+            return VerifyResult(False, 0, str(exc), None)
+        return verify_entries(entries)
+
+    def clear(self) -> None:
+        conn = self._connect()
+        try:
+            self._begin(conn)
+            conn.execute("DELETE FROM action_log")
+            self._commit(conn)
+        except Exception:
+            self._rollback(conn)
+            raise
+        finally:
+            conn.close()
+
+    def _connect(self):
+        conn = self.connect_fn()
+        if not self.postgres:
+            conn.isolation_level = None
+        return conn
+
+    def _begin(self, conn) -> None:
+        if self.postgres:
+            conn.execute(
+                "INSERT INTO action_lock (id, held) VALUES (1, 1) ON CONFLICT (id) DO NOTHING"
+            )
+            conn.execute("SELECT id FROM action_lock WHERE id = 1 FOR UPDATE")
+            return
+        conn.execute("BEGIN IMMEDIATE")
+
+    def _commit(self, conn) -> None:
+        if self.postgres:
+            conn.commit()
+            return
+        conn.execute("COMMIT")
+
+    def _rollback(self, conn) -> None:
+        try:
+            if self.postgres:
+                conn.rollback()
+            else:
+                conn.execute("ROLLBACK")
+        except Exception:
+            return
+
+    @staticmethod
+    def _read(conn) -> list[dict]:
+        rows = conn.execute(
+            "SELECT seq, ts, kind, actor, payload, prev_hash, hash FROM action_log ORDER BY seq"
+        ).fetchall()
+        entries: list[dict] = []
+        for row in rows:
+            payload = row["payload"]
+            if isinstance(payload, str):
+                parsed = json.loads(payload)
+            else:
+                parsed = payload
+            if not isinstance(parsed, dict):
+                raise ChainError(f"seq {row['seq']}: payload must be an object")
+            entries.append(
+                {
+                    "seq": int(row["seq"]),
+                    "ts": row["ts"],
+                    "kind": row["kind"],
+                    "actor": row["actor"],
+                    "payload": parsed,
+                    "prev_hash": row["prev_hash"],
+                    "hash": row["hash"],
+                }
+            )
+        return entries
+
+
+def open_action_log(settings):
+    """JSONL on disk locally. The database table when DATABASE_URL is set."""
+    if getattr(settings, "database_url", None):
+        from convoplex.db import open_db
+
+        return DbActionLog(lambda: open_db(settings), postgres=True)
+    return ActionLog(settings.log_path)
