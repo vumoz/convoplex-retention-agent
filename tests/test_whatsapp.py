@@ -619,7 +619,7 @@ def test_cli_check_send_template_customer_and_serve_banner(shop, tmp_path, monke
 
     monkeypatch.setattr(
         "convoplex.__main__.start_quick_tunnel",
-        lambda port: (None, "https://demo.trycloudflare.com"),
+        lambda port, log_path=None: (None, "https://demo.trycloudflare.com"),
     )
     assert main(["serve", "--channel", "whatsapp", "--tunnel", "--port", "8765"]) == 0
     public = capsys.readouterr().out
@@ -647,7 +647,7 @@ def test_live_serve_refuses_to_start_without_app_secret(shop, tmp_path, monkeypa
 
     started = {"tunnel": 0, "app": 0}
 
-    def fail_tunnel(port):
+    def fail_tunnel(port, log_path=None):
         started["tunnel"] += 1
         return None, "https://should-not-start.trycloudflare.com"
 
@@ -685,7 +685,7 @@ def test_live_serve_refuses_to_start_without_app_secret(shop, tmp_path, monkeypa
     monkeypatch.setattr("convoplex.api.create_app", fake_create)
     monkeypatch.setattr(
         "convoplex.__main__.start_quick_tunnel",
-        lambda port: started.__setitem__("tunnel", started["tunnel"] + 1) or (None, "https://sim.trycloudflare.com"),
+        lambda port, log_path=None: started.__setitem__("tunnel", started["tunnel"] + 1) or (None, "https://sim.trycloudflare.com"),
     )
     assert main(["serve", "--tunnel", "--port", "8766"]) == 0
     simulator = capsys.readouterr().out
@@ -894,6 +894,91 @@ def test_whatsapp_winback_cli_matches_the_customer_send(shop, tmp_path, monkeypa
     assert spoken["language"] == "en"
     _assert_number_hidden((tmp_path / "actions.jsonl").read_text(), raw_id, coded)
     _assert_number_hidden((tmp_path / "output" / "whatsapp_state.json").read_text(), raw_id, coded)
+
+
+def test_quick_tunnel_keeps_draining_after_the_url(tmp_path, monkeypatch):
+    import threading
+
+    ready = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    def lines():
+        yield "boot\n"
+        yield "INF |  https://held-name.trycloudflare.com |\n"
+        ready.set()
+        assert release.wait(2)
+        yield "still logging after the url\n"
+        finished.set()
+
+    class Proc:
+        def __init__(self):
+            self.stdout = lines()
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr("convoplex.tunnel.shutil.which", lambda name: "/usr/bin/cloudflared")
+    monkeypatch.setattr("convoplex.tunnel.subprocess.Popen", lambda *args, **kwargs: Proc())
+    log_path = tmp_path / "logs" / "cloudflared.log"
+    try:
+        proc, url = start_quick_tunnel(8000, timeout=1.0, log_path=log_path)
+        assert ready.wait(1)
+        assert url == "https://held-name.trycloudflare.com"
+        assert proc is not None
+        assert "still logging after the url" not in log_path.read_text()
+        release.set()
+        assert finished.wait(1)
+        logged = log_path.read_text()
+    finally:
+        release.set()
+    assert "boot" in logged
+    assert "https://held-name.trycloudflare.com" in logged
+    assert "still logging after the url" in logged
+
+
+def test_serve_honours_port_and_public_base_url(shop, tmp_path, monkeypatch, capsys):
+    db_file = shop.execute("PRAGMA database_list").fetchone()["file"]
+    monkeypatch.setenv("CONVOPLEX_DB", db_file)
+    monkeypatch.setenv("CONVOPLEX_LOG", str(tmp_path / "actions.jsonl"))
+    monkeypatch.setenv("CONVOPLEX_OUTPUT", str(tmp_path / "output"))
+    monkeypatch.setenv("WHATSAPP_TOKEN", TOKEN)
+    monkeypatch.setenv("WHATSAPP_PHONE_NUMBER_ID", PHONE_ID)
+    monkeypatch.setenv("WHATSAPP_VERIFY_TOKEN", "verify-me")
+    monkeypatch.setenv("WHATSAPP_APP_SECRET", SECRET)
+    monkeypatch.setenv("WHATSAPP_DEMO_TO", DEMO)
+    monkeypatch.setenv("CONVOPLEX_CHANNEL", "whatsapp")
+    monkeypatch.setenv("PORT", "9000")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://demo.example/")
+    captured = {}
+
+    def fake_create(settings, generate_if_missing=True):
+        app = FastAPI()
+        app.state.channel = settings.channel
+        app.state.settings = settings
+        return app
+
+    monkeypatch.setattr("convoplex.api.create_app", fake_create)
+    import uvicorn
+
+    monkeypatch.setattr(uvicorn, "run", lambda app, host, port: captured.update(host=host, port=port))
+    assert main(["serve"]) == 0
+    banner = capsys.readouterr().out
+    assert captured == {"host": "0.0.0.0", "port": 9000}
+    assert "https://demo.example/v1/whatsapp/webhook" in banner
+    assert "verify-me" in banner
+    assert "127.0.0.1" not in banner
+    assert "cloudflared" not in banner
+    assert TOKEN not in banner
+
+    assert main(["serve", "--host", "127.0.0.1", "--port", "8765"]) == 0
+    capsys.readouterr()
+    assert captured == {"host": "127.0.0.1", "port": 8765}
+
+    monkeypatch.setenv("PORT", "nope")
+    assert main(["serve"]) == 1
+    assert "PORT" in capsys.readouterr().err
+    assert captured == {"host": "127.0.0.1", "port": 8765}
 
 
 def test_quick_tunnel_parser_and_missing_binary(monkeypatch):

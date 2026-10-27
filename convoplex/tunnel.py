@@ -7,10 +7,12 @@ access token.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
 import threading
+from pathlib import Path
 
 QUICK_TUNNEL = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com", re.IGNORECASE)
 CALLBACK_PATH = "/v1/whatsapp/webhook"
@@ -49,31 +51,48 @@ def _port_from_callback(callback: str) -> int:
     return int(match.group(1))
 
 
-def start_quick_tunnel(port: int, timeout: float = 25.0) -> tuple[subprocess.Popen[str] | None, str | None]:
+def start_quick_tunnel(
+    port: int,
+    timeout: float = 25.0,
+    log_path: str | Path | None = None,
+) -> tuple[subprocess.Popen[str] | None, str | None]:
     """Start `cloudflared tunnel --url` and return the process plus the public origin.
 
     When cloudflared is not installed, both values are None. The caller still
     prints the local callback and the install hint.
+
+    The reader keeps copying stdout to ``log_path`` after the URL appears.
+    Stopping there lets the pipe fill and stall cloudflared.
     """
     if shutil.which("cloudflared") is None:
         return None, None
+    destination = Path(log_path) if log_path else Path(os.devnull)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    log_file = destination.open("a", encoding="utf-8", buffering=1)
     proc = subprocess.Popen(
         ["cloudflared", "tunnel", "--url", f"http://127.0.0.1:{port}", "--no-autoupdate"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,
     )
     found: list[str] = []
 
     def reader() -> None:
         assert proc.stdout is not None
-        for line in proc.stdout:
-            url = parse_quick_tunnel_url(line)
-            if url:
-                found.append(url)
-                return
+        try:
+            for line in proc.stdout:
+                log_file.write(line)
+                if not found:
+                    url = parse_quick_tunnel_url(line)
+                    if url:
+                        found.append(url)
+        finally:
+            log_file.flush()
 
-    thread = threading.Thread(target=reader, daemon=True)
+    thread = threading.Thread(target=reader, name="cloudflared-log", daemon=True)
     thread.start()
     thread.join(timeout)
     if proc.poll() is not None and not found:

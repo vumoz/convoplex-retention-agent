@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from convoplex.config import Settings
@@ -68,8 +69,17 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     serve_cmd = sub.add_parser("serve", help="Run the FastAPI app")
-    serve_cmd.add_argument("--host", default="127.0.0.1")
-    serve_cmd.add_argument("--port", type=int, default=8000)
+    serve_cmd.add_argument(
+        "--host",
+        default=None,
+        help="Bind address. Defaults to 0.0.0.0 when PORT is set, otherwise 127.0.0.1.",
+    )
+    serve_cmd.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Bind port. Defaults to the PORT env var, otherwise 8000.",
+    )
     serve_cmd.add_argument(
         "--channel",
         choices=("simulator", "whatsapp"),
@@ -150,6 +160,11 @@ def main(argv: list[str] | None = None) -> int:
 
         from convoplex.api import create_app
 
+        try:
+            args.host, args.port = _serve_bind(args.host, args.port)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
         if args.channel:
             settings = settings.with_channel(args.channel)
         refusal = _live_app_secret_error(settings)
@@ -165,6 +180,28 @@ def main(argv: list[str] | None = None) -> int:
     return 2
 
 
+def _serve_bind(host: str | None, port: int | None) -> tuple[str, int]:
+    """Resolve the listen address. PORT selects the platform port and 0.0.0.0."""
+    env_port = (os.environ.get("PORT") or "").strip()
+    if port is None and env_port:
+        try:
+            port = int(env_port)
+        except ValueError as exc:
+            raise ValueError("PORT must be an integer.") from exc
+    if port is None:
+        port = 8000
+    if port < 1 or port > 65535:
+        raise ValueError("PORT must be an integer from 1 to 65535.")
+    if host is None:
+        host = "0.0.0.0" if env_port else "127.0.0.1"
+    return host, port
+
+
+def _public_base_url() -> str | None:
+    base = (os.environ.get("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+    return base or None
+
+
 def _live_app_secret_error(settings: Settings) -> str | None:
     """Live WhatsApp must not serve a public webhook that accepts unsigned posts."""
     if settings.channel == "whatsapp" and not settings.whatsapp_app_secret:
@@ -177,20 +214,21 @@ def _live_app_secret_error(settings: Settings) -> str | None:
 
 
 def _announce_webhook(args, settings: Settings) -> None:
-    """Print the callback URL and verify token when WhatsApp or a tunnel is requested."""
-    if settings.channel != "whatsapp" and not args.tunnel:
+    """Print the callback URL and verify token when WhatsApp, a public host, or a tunnel is requested."""
+    if settings.channel != "whatsapp" and not args.tunnel and not _public_base_url():
         return
     tunnel = None
     public = None
     if args.tunnel:
-        tunnel, public = start_quick_tunnel(args.port)
+        tunnel, public = start_quick_tunnel(args.port, log_path=settings.output_dir / "cloudflared.log")
+    configured = _public_base_url()
     host = "127.0.0.1" if args.host in {"0.0.0.0", "::"} else args.host
-    base = public or f"http://{host}:{args.port}"
+    base = public or configured or f"http://{host}:{args.port}"
     print(
         format_webhook_banner(
             callback=callback_url(base),
             verify_token=settings.whatsapp_verify_token,
-            public=bool(public),
+            public=bool(public or configured),
         )
     )
     if args.tunnel and public is None:

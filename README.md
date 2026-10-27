@@ -249,7 +249,15 @@ If `cloudflared` is not installed, the process still serves on `127.0.0.1:8000` 
 cloudflared tunnel --url http://127.0.0.1:8000
 ```
 
-Paste `https://<host>.trycloudflare.com/v1/whatsapp/webhook` as the callback URL. Meta cannot call `127.0.0.1`.
+Paste `https://<host>.trycloudflare.com/v1/whatsapp/webhook` as the callback URL. Meta cannot call `127.0.0.1`. cloudflared's output is copied to `output/cloudflared.log` for the whole run, including after the URL is printed.
+
+On a public HTTPS host, skip `--tunnel`. `PORT` selects the listen port and binds `0.0.0.0`. `PUBLIC_BASE_URL` is the origin printed as the callback:
+
+```bash
+export PORT=8080
+export PUBLIC_BASE_URL=https://your-host.example
+python -m convoplex serve --channel whatsapp
+```
 
 On the dashboard, **Simulator / WhatsApp live** shows whether env is missing, whether the 24-hour window is open, and the last status (`sent`, `delivered`, `read`). **Send on WhatsApp** on the win-back and on the promo card delivers to the masked demo number. Ticks on a shop bubble come from status webhooks. The demo number is shown as the last two digits only.
 
