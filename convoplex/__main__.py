@@ -235,7 +235,10 @@ def _announce_webhook(args, settings: Settings) -> None:
         if tunnel is None:
             print("cloudflared is not on PATH. Install it from https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/")
         else:
-            print("cloudflared did not report a public URL yet. Paste the https origin from its log.")
+            print(
+                "cloudflared did not report a public URL yet. "
+                f"Paste the https origin from {settings.output_dir / 'cloudflared.log'}."
+            )
     if tunnel is not None:
         # The tunnel is a child process. uvicorn blocks; stop cloudflared when it returns.
         import atexit
