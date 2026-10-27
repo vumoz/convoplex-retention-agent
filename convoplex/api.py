@@ -343,7 +343,11 @@ def create_app(settings: Settings | None = None, *, generate_if_missing: bool = 
     async def whatsapp_receive(request: Request, background: BackgroundTasks):
         current = request.app.state.settings
         raw = await request.body()
-        if not signature_matches(raw, request.headers.get("x-hub-signature-256"), current.whatsapp_app_secret):
+        secret = current.whatsapp_app_secret
+        live = request.app.state.channel == "whatsapp"
+        if live and not secret:
+            raise HTTPException(403, "WHATSAPP_APP_SECRET is required for live WhatsApp webhooks")
+        if secret and not signature_matches(raw, request.headers.get("x-hub-signature-256"), secret):
             raise HTTPException(403, "invalid signature")
         try:
             payload = json.loads(raw)

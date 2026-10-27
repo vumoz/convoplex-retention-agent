@@ -63,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
         "--channel",
         choices=("simulator", "whatsapp"),
         default=None,
-        help="simulator (default) or whatsapp. Live sends also require WHATSAPP_DEMO_TO.",
+        help="simulator (default) or whatsapp. Live mode requires WHATSAPP_APP_SECRET and WHATSAPP_DEMO_TO.",
     )
     serve_cmd.add_argument(
         "--tunnel",
@@ -134,6 +134,10 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.channel:
             settings = settings.with_channel(args.channel)
+        refusal = _live_app_secret_error(settings)
+        if refusal:
+            print(refusal, file=sys.stderr)
+            return 1
         app = create_app(settings)
         _announce_webhook(args, settings)
         uvicorn.run(app, host=args.host, port=args.port)
@@ -141,6 +145,17 @@ def main(argv: list[str] | None = None) -> int:
 
     parser.error(f"unknown command {args.cmd}")
     return 2
+
+
+def _live_app_secret_error(settings: Settings) -> str | None:
+    """Live WhatsApp must not serve a public webhook that accepts unsigned posts."""
+    if settings.channel == "whatsapp" and not settings.whatsapp_app_secret:
+        return (
+            "Refusing to start: WhatsApp live requires WHATSAPP_APP_SECRET. "
+            "Without it, anyone who can reach the webhook could post fake inbound messages. "
+            "Set WHATSAPP_APP_SECRET from the Meta app, or serve with the simulator channel."
+        )
+    return None
 
 
 def _announce_webhook(args, settings: Settings) -> None:

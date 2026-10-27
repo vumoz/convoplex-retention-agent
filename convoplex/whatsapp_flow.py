@@ -62,6 +62,8 @@ def status_view(settings: Settings, channel: str, store: WhatsAppStore, now: dat
         verify_token=settings.whatsapp_verify_token,
         demo_to=settings.whatsapp_demo_to,
     )
+    if channel == "whatsapp" and not settings.whatsapp_app_secret:
+        missing.append("WHATSAPP_APP_SECRET")
     customer_id = state.get("demo_customer_id")
     try:
         customer_id = int(customer_id) if customer_id is not None else None
@@ -81,7 +83,7 @@ def status_view(settings: Settings, channel: str, store: WhatsAppStore, now: dat
         "demo_customer_id": customer_id,
         "graph_version": settings.graph_api_version,
         "callback_path": "/v1/whatsapp/webhook",
-        "signature_required": bool(settings.whatsapp_app_secret),
+        "signature_required": channel == "whatsapp" or bool(settings.whatsapp_app_secret),
         "synthetic": True,
     }
 

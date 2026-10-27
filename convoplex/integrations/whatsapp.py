@@ -91,9 +91,13 @@ def verify_subscription(mode: str | None, token: str | None, challenge: str | No
 
 
 def signature_matches(body: bytes, header: str | None, app_secret: str | None) -> bool:
-    """X-Hub-Signature-256. When the app secret is unset, the check is skipped."""
+    """True only when X-Hub-Signature-256 matches app_secret.
+
+    A missing secret does not match. Live WhatsApp must set WHATSAPP_APP_SECRET
+    and reject unsigned posts. The simulator skips this call when the secret is unset.
+    """
     if not app_secret:
-        return True
+        return False
     if not header or not header.startswith("sha256="):
         return False
     given = header.split("=", 1)[1].strip().lower()

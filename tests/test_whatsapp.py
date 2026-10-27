@@ -158,7 +158,8 @@ def test_signature_verification_and_settings_hide_secrets(monkeypatch):
     assert signature_matches(body, f"sha256={digest}", SECRET) is True
     assert signature_matches(body, "sha256=deadbeef", SECRET) is False
     assert signature_matches(body, None, SECRET) is False
-    assert signature_matches(body, None, None) is True
+    assert signature_matches(body, f"sha256={digest}", None) is False
+    assert signature_matches(body, None, None) is False
 
     monkeypatch.setenv("WHATSAPP_TOKEN", TOKEN)
     monkeypatch.setenv("WHATSAPP_APP_SECRET", SECRET)
@@ -362,6 +363,7 @@ def test_inbound_audio_is_transcribed_and_answered(shop, tmp_path):
             whatsapp_token=TOKEN,
             whatsapp_phone_number_id=PHONE_ID,
             whatsapp_verify_token="verify-me",
+            whatsapp_app_secret=SECRET,
             whatsapp_demo_to=DEMO,
             whatsapp_http=httpx.Client(transport=httpx.MockTransport(handler)),
         )
@@ -389,7 +391,12 @@ def test_inbound_audio_is_transcribed_and_answered(shop, tmp_path):
             }
         ]
     }
-    response = client.post("/v1/whatsapp/webhook", json=payload)
+    raw = json.dumps(payload).encode()
+    response = client.post(
+        "/v1/whatsapp/webhook",
+        content=raw,
+        headers={"Content-Type": "application/json", "X-Hub-Signature-256": _sign(raw)},
+    )
     assert response.status_code == 200
     assert response.json()["processed"] is True
     hosts = [call.url.host for call in calls]
@@ -405,30 +412,33 @@ def test_inbound_audio_is_transcribed_and_answered(shop, tmp_path):
 
 def test_status_webhooks_show_ticks_and_do_not_move_backwards(shop, tmp_path):
     calls: list[httpx.Request] = []
-    client = TestClient(_live_app(shop, tmp_path, calls))
+    client = TestClient(_live_app(shop, tmp_path, calls, app_secret=SECRET))
     WhatsAppStore(tmp_path / "output" / "whatsapp_state.json").note_inbound(datetime.now(timezone.utc))
     sent = client.post("/v1/customers/1/whatsapp")
     wamid = sent.json()["wamid"]
     assert client.get("/v1/customers/1/thread").json()["messages"][-1]["whatsapp"]["status"] == "sent"
 
     def post_status(status: str) -> None:
+        payload = {
+            "entry": [
+                {
+                    "changes": [
+                        {
+                            "value": {
+                                "statuses": [
+                                    {"id": wamid, "status": status, "recipient_id": DEMO_DIGITS, "timestamp": "1"}
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ]
+        }
+        raw = json.dumps(payload).encode()
         response = client.post(
             "/v1/whatsapp/webhook",
-            json={
-                "entry": [
-                    {
-                        "changes": [
-                            {
-                                "value": {
-                                    "statuses": [
-                                        {"id": wamid, "status": status, "recipient_id": DEMO_DIGITS, "timestamp": "1"}
-                                    ]
-                                }
-                            }
-                        ]
-                    }
-                ]
-            },
+            content=raw,
+            headers={"Content-Type": "application/json", "X-Hub-Signature-256": _sign(raw)},
         )
         assert response.status_code == 200
 
@@ -586,6 +596,7 @@ def test_cli_check_send_template_customer_and_serve_banner(shop, tmp_path, monke
     import uvicorn
 
     monkeypatch.setattr(uvicorn, "run", lambda app, host, port: captured.update(host=host, port=port))
+    monkeypatch.setenv("WHATSAPP_APP_SECRET", SECRET)
     assert main(["serve", "--channel", "whatsapp", "--port", "8765"]) == 0
     banner = capsys.readouterr().out
     assert captured["channel"] == "whatsapp"
@@ -607,8 +618,122 @@ def test_cli_check_send_template_customer_and_serve_banner(shop, tmp_path, monke
     assert TOKEN not in public
 
     monkeypatch.setenv("CONVOPLEX_CHANNEL", "simulator")
+    monkeypatch.delenv("WHATSAPP_APP_SECRET", raising=False)
     assert main(["serve", "--port", "8766"]) == 0
     assert "verify-me" not in capsys.readouterr().out
+
+
+def test_live_serve_refuses_to_start_without_app_secret(shop, tmp_path, monkeypatch, capsys):
+    db_file = shop.execute("PRAGMA database_list").fetchone()["file"]
+    monkeypatch.setenv("CONVOPLEX_DB", db_file)
+    monkeypatch.setenv("CONVOPLEX_LOG", str(tmp_path / "actions.jsonl"))
+    monkeypatch.setenv("CONVOPLEX_OUTPUT", str(tmp_path / "output"))
+    monkeypatch.setenv("WHATSAPP_TOKEN", TOKEN)
+    monkeypatch.setenv("WHATSAPP_PHONE_NUMBER_ID", PHONE_ID)
+    monkeypatch.setenv("WHATSAPP_VERIFY_TOKEN", "verify-me")
+    monkeypatch.setenv("WHATSAPP_DEMO_TO", DEMO)
+    monkeypatch.setenv("CONVOPLEX_CHANNEL", "whatsapp")
+    monkeypatch.delenv("WHATSAPP_APP_SECRET", raising=False)
+
+    started = {"tunnel": 0, "app": 0}
+
+    def fail_tunnel(port):
+        started["tunnel"] += 1
+        return None, "https://should-not-start.trycloudflare.com"
+
+    def fail_app(settings, generate_if_missing=True):
+        started["app"] += 1
+        raise AssertionError("create_app must not run without WHATSAPP_APP_SECRET")
+
+    monkeypatch.setattr("convoplex.__main__.start_quick_tunnel", fail_tunnel)
+    monkeypatch.setattr("convoplex.api.create_app", fail_app)
+
+    assert main(["serve", "--channel", "whatsapp", "--tunnel", "--port", "8765"]) == 1
+    refused = capsys.readouterr()
+    assert "WHATSAPP_APP_SECRET" in refused.err
+    assert "Refusing to start" in refused.err
+    assert TOKEN not in refused.err
+    assert SECRET not in refused.err
+    assert started == {"tunnel": 0, "app": 0}
+    assert "trycloudflare" not in refused.out
+
+    assert main(["serve", "--tunnel"]) == 1
+    again = capsys.readouterr().err
+    assert "WHATSAPP_APP_SECRET" in again
+    assert started == {"tunnel": 0, "app": 0}
+
+    monkeypatch.setenv("CONVOPLEX_CHANNEL", "simulator")
+    import uvicorn
+
+    def fake_create(settings, generate_if_missing=True):
+        started["app"] += 1
+        app = FastAPI()
+        app.state.channel = settings.channel
+        return app
+
+    monkeypatch.setattr(uvicorn, "run", lambda app, host, port: None)
+    monkeypatch.setattr("convoplex.api.create_app", fake_create)
+    monkeypatch.setattr(
+        "convoplex.__main__.start_quick_tunnel",
+        lambda port: started.__setitem__("tunnel", started["tunnel"] + 1) or (None, "https://sim.trycloudflare.com"),
+    )
+    assert main(["serve", "--tunnel", "--port", "8766"]) == 0
+    simulator = capsys.readouterr().out
+    assert "https://sim.trycloudflare.com/v1/whatsapp/webhook" in simulator
+    assert started["tunnel"] == 1
+    assert started["app"] == 1
+
+
+def test_live_webhook_rejects_unsigned_posts_and_simulator_does_not(shop, tmp_path):
+    calls: list[httpx.Request] = []
+    live = TestClient(_live_app(shop, tmp_path, calls))
+    status = live.get("/v1/whatsapp/status").json()
+    assert status["signature_required"] is True
+    assert "WHATSAPP_APP_SECRET" in status["missing"]
+    raw = json.dumps(_inbound("wamid.FAKE", DEMO_DIGITS, "forged")).encode()
+    unsigned = live.post("/v1/whatsapp/webhook", content=raw, headers={"Content-Type": "application/json"})
+    assert unsigned.status_code == 403
+    assert "WHATSAPP_APP_SECRET" in unsigned.json()["detail"]
+    forged = live.post(
+        "/v1/whatsapp/webhook",
+        content=raw,
+        headers={"Content-Type": "application/json", "X-Hub-Signature-256": _sign(raw)},
+    )
+    assert forged.status_code == 403
+    assert calls == []
+
+    simulator = TestClient(_live_app(shop, tmp_path, calls, channel="simulator"))
+    sim_status = simulator.get("/v1/whatsapp/status").json()
+    assert sim_status["channel"] == "simulator"
+    assert "WHATSAPP_APP_SECRET" not in sim_status["missing"]
+    assert sim_status["signature_required"] is False
+    accepted = simulator.post(
+        "/v1/whatsapp/webhook",
+        content=b"{}",
+        headers={"Content-Type": "application/json"},
+    )
+    assert accepted.status_code == 200
+    assert accepted.json()["processed"] is False
+
+    switched = simulator.post("/v1/whatsapp/channel", json={"channel": "whatsapp"})
+    assert switched.status_code == 200
+    assert "WHATSAPP_APP_SECRET" in switched.json()["missing"]
+    blocked = simulator.post(
+        "/v1/whatsapp/webhook",
+        content=raw,
+        headers={"Content-Type": "application/json"},
+    )
+    assert blocked.status_code == 403
+    assert calls == []
+
+    secured = TestClient(_live_app(shop, tmp_path, calls, app_secret=SECRET))
+    missing_header = secured.post(
+        "/v1/whatsapp/webhook",
+        content=b"{}",
+        headers={"Content-Type": "application/json"},
+    )
+    assert missing_header.status_code == 403
+    assert missing_header.json()["detail"] == "invalid signature"
 
 
 def test_quick_tunnel_parser_and_missing_binary(monkeypatch):

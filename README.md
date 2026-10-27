@@ -208,7 +208,7 @@ Config, all from the environment:
 | `WHATSAPP_TOKEN` | Cloud API access token. Never logged, never committed. `WHATSAPP_ACCESS_TOKEN` is still read if `WHATSAPP_TOKEN` is unset. |
 | `WHATSAPP_PHONE_NUMBER_ID` | The test number's phone number id. |
 | `WHATSAPP_VERIFY_TOKEN` | You choose this. Meta sends it back on the webhook handshake. |
-| `WHATSAPP_APP_SECRET` | Optional. When set, `POST /v1/whatsapp/webhook` must carry a valid `X-Hub-Signature-256`. |
+| `WHATSAPP_APP_SECRET` | Required for WhatsApp live. `serve` and `serve --tunnel` refuse to start when `CONVOPLEX_CHANNEL=whatsapp` (or `--channel whatsapp`) and this is unset. Live `POST /v1/whatsapp/webhook` rejects a missing or invalid `X-Hub-Signature-256` with 403. The simulator still accepts unsigned posts when this is unset. |
 | `WHATSAPP_DEMO_TO` | The only recipient. Country code, plus sign optional. Same digits WhatsApp puts in `from`. |
 | `GRAPH_API_VERSION` | Optional, default `v21.0`. |
 | `CONVOPLEX_CHANNEL` | `simulator` (default) or `whatsapp`. |
@@ -222,7 +222,7 @@ export WHATSAPP_TOKEN=your_token
 export WHATSAPP_PHONE_NUMBER_ID=your_phone_number_id
 export WHATSAPP_VERIFY_TOKEN=a_string_you_choose
 export WHATSAPP_DEMO_TO=2348012345678
-export WHATSAPP_APP_SECRET=your_app_secret   # optional, recommended
+export WHATSAPP_APP_SECRET=your_app_secret   # required before serve --channel whatsapp
 export CONVOPLEX_CHANNEL=whatsapp
 python -m convoplex whatsapp check
 python -m convoplex whatsapp customer 184
@@ -231,7 +231,7 @@ python -m convoplex whatsapp send-template
 
 `whatsapp customer 184` maps inbound messages to that synthetic customer. The dashboard does the same thing when you select a customer. If nothing is selected and customer 184 exists, inbound messages use 184.
 
-Expose the webhook with a Cloudflare quick tunnel. Subscribe to the `messages` field. The command prints the callback URL and the verify token to paste into the Meta app. It does not print the access token.
+Expose the webhook with a Cloudflare quick tunnel. Subscribe to the `messages` field. The command prints the callback URL and the verify token to paste into the Meta app. It does not print the access token. It exits before opening the tunnel if `WHATSAPP_APP_SECRET` is unset, so the public URL cannot accept unsigned posts.
 
 ```bash
 python -m convoplex serve --channel whatsapp --tunnel
