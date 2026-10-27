@@ -201,6 +201,8 @@ The simulator is the default. Nothing is sent unless `CONVOPLEX_CHANNEL=whatsapp
 
 Outside the 24-hour customer service window, WhatsApp only accepts an approved template. Convoplex sends the test-number template `hello_world` (`en_US`) and says so on the dashboard. After the demo phone messages in, free-form text and the promo card can go out. The card is uploaded as JPEG (`POST /{phone_number_id}/media`) and sent as an image with a caption. Inbound text and voice notes from that phone run through the same reply flow, and the agent's answer is sent back. Voice notes are downloaded with `GET /{media_id}` and then the media URL, both with the bearer token, and transcribed with the existing voice path.
 
+Cloud API message ids (`wamid.HBgN…`) embed the recipient number in base64. Convoplex stores the SHA-256 of that id for dedupe and for matching `sent` / `delivered` / `read` webhooks, and shows only the last six characters. The full id is not written to the action log, the WhatsApp state file, API responses, the dashboard, or the CLI.
+
 Config, all from the environment:
 
 | Variable | Role |
@@ -227,7 +229,11 @@ export CONVOPLEX_CHANNEL=whatsapp
 python -m convoplex whatsapp check
 python -m convoplex whatsapp customer 184
 python -m convoplex whatsapp send-template
+python -m convoplex whatsapp winback --customer 184 --lang pcm
+python -m convoplex whatsapp winback --customer 184 --promo-card
 ```
+
+`whatsapp winback` is the same send as `POST /v1/customers/184/whatsapp`. `--lang` applies when a new draft is written. `--promo-card` draws the card if it is missing and sends it the same way as `POST /v1/offers/{id}/whatsapp`. The printed message id is only the short tail.
 
 `whatsapp customer 184` maps inbound messages to that synthetic customer. The dashboard does the same thing when you select a customer. If nothing is selected and customer 184 exists, inbound messages use 184.
 

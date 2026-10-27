@@ -18,7 +18,12 @@ from convoplex.agent import draft_winback, handle_reply
 from convoplex.config import Settings
 from convoplex.context import get_customer
 from convoplex.db import connect
-from convoplex.integrations.images import load_offer_for_card, promo_filename
+from convoplex.integrations.images import (
+    build_promo_image,
+    load_offer_for_card,
+    promo_filename,
+    save_promo_image,
+)
 from convoplex.integrations.voice import VoiceError, transcribe_audio
 from convoplex.integrations.whatsapp import (
     DEFAULT_TEMPLATE,
@@ -32,9 +37,13 @@ from convoplex.integrations.whatsapp import (
     mask_phone,
     missing_setting_names,
     normalize_phone,
+    phone_base64,
+    public_wamid,
     redact,
+    redact_wamids,
     require_allowlisted,
 )
+from convoplex.llm import LLMError, LiveMuse, MockMuse
 from convoplex.money import naira
 from convoplex.whatsapp_state import WhatsAppStore, store_path, window_open
 
@@ -121,6 +130,11 @@ def safe_append(log: ActionLog, settings: Settings, *, kind: str, actor: str, pa
         raise RuntimeError("refusing to log the verify token")
     if demo and len(demo) >= 6 and demo in blob:
         raise RuntimeError("refusing to log the demo phone number")
+    coded = phone_base64(demo) if demo else ""
+    if coded and (coded in blob or (len(coded) > 8 and coded[:-1] in blob)):
+        raise RuntimeError("refusing to log the demo phone number")
+    if "wamid." in blob:
+        raise RuntimeError("refusing to log a WhatsApp message id")
     return log.append(kind=kind, actor=actor, payload=payload)
 
 
@@ -165,11 +179,16 @@ def record_statuses(
             continue
         if recipient and not demo:
             continue
-        status = store.set_status(item.message_id, item.status)
-        payload: dict = {"wamid": item.message_id, "status": status}
+        public = public_wamid(item.message_id)
+        status = store.set_status(public["wamid_hash"], item.status)
+        payload: dict = {
+            "wamid_hash": public["wamid_hash"],
+            "wamid_tail": public["wamid_tail"],
+            "status": status,
+        }
         if item.recipient:
             payload["to_masked"] = mask_phone(item.recipient)
-        customer_id = _customer_for_wamid(log, item.message_id)
+        customer_id = _customer_for_wamid(log, public["wamid_hash"])
         if customer_id is not None:
             payload["customer_id"] = customer_id
         safe_append(log, settings, kind="whatsapp_status", actor="whatsapp", payload=payload)
@@ -177,13 +196,13 @@ def record_statuses(
     return applied
 
 
-def _customer_for_wamid(log: ActionLog, wamid: str) -> int | None:
+def _customer_for_wamid(log: ActionLog, wamid_hash: str) -> int | None:
     found = None
     for entry in log.read_all():
         payload = entry.get("payload") or {}
         if entry.get("kind") != "whatsapp_send":
             continue
-        if payload.get("wamid") != wamid:
+        if payload.get("wamid_hash") != wamid_hash:
             continue
         customer_id = payload.get("customer_id")
         if customer_id is not None:
@@ -214,14 +233,16 @@ def remember_send(
     *,
     customer_id: int | None,
     message_seq: int | None,
-    wamid: str,
+    wamid_hash: str,
+    wamid_tail: str,
     kind: str,
     note: str,
     caption: str | None,
 ) -> None:
-    store.set_status(wamid, "sent")
+    store.set_status(wamid_hash, "sent")
     payload: dict = {
-        "wamid": wamid,
+        "wamid_hash": wamid_hash,
+        "wamid_tail": wamid_tail,
         "kind": kind,
         "to_masked": _masked_demo(settings),
         "note": note,
@@ -266,12 +287,15 @@ def deliver(
             store,
             customer_id=customer_id,
             message_seq=message_seq,
-            wamid=result.wamid,
+            wamid_hash=result.wamid_hash,
+            wamid_tail=result.wamid_tail,
             kind="image",
             note="",
             caption=caption,
         )
-        return _delivery_body(customer_id, "image", result.wamid, settings, "open", "")
+        return _delivery_body(
+            customer_id, "image", result.wamid_hash, result.wamid_tail, settings, "open", ""
+        )
     if kind == "text" and open_now:
         result = client.send_text(demo, text)
         remember_send(
@@ -280,12 +304,15 @@ def deliver(
             store,
             customer_id=customer_id,
             message_seq=message_seq,
-            wamid=result.wamid,
+            wamid_hash=result.wamid_hash,
+            wamid_tail=result.wamid_tail,
             kind="text",
             note="",
             caption=None,
         )
-        return _delivery_body(customer_id, "text", result.wamid, settings, "open", "")
+        return _delivery_body(
+            customer_id, "text", result.wamid_hash, result.wamid_tail, settings, "open", ""
+        )
     result = client.send_template(demo)
     note = window_closed_note(kind if kind in {"text", "image"} else "text")
     remember_send(
@@ -294,19 +321,31 @@ def deliver(
         store,
         customer_id=customer_id,
         message_seq=message_seq,
-        wamid=result.wamid,
+        wamid_hash=result.wamid_hash,
+        wamid_tail=result.wamid_tail,
         kind="template",
         note=note,
         caption=None,
     )
-    return _delivery_body(customer_id, "template", result.wamid, settings, "closed", note)
+    return _delivery_body(
+        customer_id, "template", result.wamid_hash, result.wamid_tail, settings, "closed", note
+    )
 
 
-def _delivery_body(customer_id: int | None, sent: str, wamid: str, settings: Settings, window: str, note: str) -> dict:
+def _delivery_body(
+    customer_id: int | None,
+    sent: str,
+    wamid_hash: str,
+    wamid_tail: str,
+    settings: Settings,
+    window: str,
+    note: str,
+) -> dict:
     return {
         "customer_id": customer_id,
         "sent": sent,
-        "wamid": wamid,
+        "wamid_hash": wamid_hash,
+        "wamid_tail": wamid_tail,
         "to_masked": _masked_demo(settings),
         "window": window,
         "note": note,
@@ -335,6 +374,7 @@ def send_winback(
     customer_id: int,
     *,
     max_tokens: int,
+    language: str | None = None,
 ) -> dict:
     _ensure_live(settings, channel)
     conn = connect(settings.db_path)
@@ -343,7 +383,7 @@ def send_winback(
             raise LookupError(f"Unknown customer {customer_id}")
         existing = _latest_winback(log, customer_id)
         if existing is None:
-            draft_winback(conn, log, llm, customer_id, max_tokens=max_tokens)
+            draft_winback(conn, log, llm, customer_id, max_tokens=max_tokens, language=language)
             existing = _latest_winback(log, customer_id)
     finally:
         conn.close()
@@ -410,7 +450,8 @@ def send_template_command(settings: Settings, log: ActionLog, store: WhatsAppSto
         store,
         customer_id=customer_id,
         message_seq=None,
-        wamid=result.wamid,
+        wamid_hash=result.wamid_hash,
+        wamid_tail=result.wamid_tail,
         kind="template",
         note=f"Template {DEFAULT_TEMPLATE} ({DEFAULT_TEMPLATE_LANGUAGE}).",
         caption=None,
@@ -418,7 +459,8 @@ def send_template_command(settings: Settings, log: ActionLog, store: WhatsAppSto
     return _delivery_body(
         customer_id,
         "template",
-        result.wamid,
+        result.wamid_hash,
+        result.wamid_tail,
         settings,
         "open" if window_open(store.load().get("last_inbound_at"), now_utc()) else "closed",
         "",
@@ -456,16 +498,24 @@ def process_messages(
 
 
 def _log_failure(settings: Settings, log: ActionLog, message: InboundMessage, exc: Exception) -> None:
-    detail = redact(
-        str(exc),
-        settings.whatsapp_token,
-        settings.whatsapp_app_secret,
-        settings.whatsapp_verify_token,
-        normalize_phone(settings.whatsapp_demo_to),
+    demo = normalize_phone(settings.whatsapp_demo_to)
+    coded = phone_base64(demo)
+    detail = redact_wamids(
+        redact(
+            str(exc),
+            settings.whatsapp_token,
+            settings.whatsapp_app_secret,
+            settings.whatsapp_verify_token,
+            demo,
+            coded,
+            coded[:-1] if len(coded) > 8 else None,
+        )
     )
+    public = public_wamid(message.message_id) if message.message_id else {}
     payload = {
-        "whatsapp_message_id": message.message_id,
-        "error": detail[:400],
+        "wamid_hash": public.get("wamid_hash"),
+        "wamid_tail": public.get("wamid_tail"),
+        "error": redact_wamids(detail[:400]),
     }
     try:
         safe_append(log, settings, kind="whatsapp_error", actor="whatsapp", payload=payload)
@@ -495,7 +545,7 @@ def _process_one(
                 kind="whatsapp_error",
                 actor="whatsapp",
                 payload={
-                    "whatsapp_message_id": message.message_id,
+                    **public_wamid(message.message_id),
                     "error": "No demo customer is selected. Choose one in the dashboard or CLI.",
                 },
             )
@@ -507,7 +557,7 @@ def _process_one(
             actor="whatsapp",
             payload={
                 "customer_id": customer_id,
-                "whatsapp_message_id": message.message_id,
+                **public_wamid(message.message_id),
                 "kind": message.kind,
                 "from_masked": mask_phone(message.from_phone),
             },
@@ -640,7 +690,7 @@ def run_check(settings: Settings, http: httpx.Client | None = None) -> int:
     try:
         info = WhatsAppClient(settings, channel=settings.channel, http=client_http).fetch_phone()
     except WhatsAppError as exc:
-        print(redact(str(exc), settings.whatsapp_token, settings.whatsapp_app_secret), file=sys.stderr)
+        print(_public_error(settings, exc), file=sys.stderr)
         return 1
     finally:
         if owns and client_http is not None:
@@ -657,11 +707,144 @@ def run_send_template(settings: Settings, http: httpx.Client | None = None) -> i
     try:
         result = send_template_command(settings, log, store, http)
     except (SendBlocked, WhatsAppError) as exc:
-        print(redact(str(exc), settings.whatsapp_token, settings.whatsapp_app_secret), file=sys.stderr)
+        print(_public_error(settings, exc), file=sys.stderr)
         return 1
-    print(f"Sent {DEFAULT_TEMPLATE} ({DEFAULT_TEMPLATE_LANGUAGE}) to {result['to_masked']}")
-    print(f"Message id: {result['wamid']}")
+    _print_delivery(result)
     return 0
+
+
+def run_winback(
+    settings: Settings,
+    customer_id: int,
+    *,
+    language: str | None = None,
+    promo_card: bool = False,
+    http: httpx.Client | None = None,
+) -> int:
+    """Same send as POST /v1/customers/{id}/whatsapp. --promo-card also sends the card."""
+    log = ActionLog(settings.log_path)
+    store = store_for(settings)
+    llm = _llm_for(settings)
+    try:
+        result = send_winback(
+            settings,
+            settings.channel,
+            log,
+            llm,
+            store,
+            http,
+            customer_id,
+            max_tokens=settings.max_tokens,
+            language=language,
+        )
+    except LookupError:
+        print(f"Unknown customer {customer_id}", file=sys.stderr)
+        return 1
+    except (SendBlocked, WhatsAppError, LLMError) as exc:
+        print(_public_error(settings, exc), file=sys.stderr)
+        return 1
+    _print_delivery(result)
+    if not promo_card:
+        return 0
+    try:
+        promo = _send_promo_card(settings, log, store, http, customer_id)
+    except (SendBlocked, WhatsAppError, LLMError, LookupError) as exc:
+        print(_public_error(settings, exc), file=sys.stderr)
+        return 1
+    print("Promo card:")
+    _print_delivery(promo)
+    return 0
+
+
+def _llm_for(settings: Settings):
+    if settings.llm_mode == "live":
+        return LiveMuse(
+            api_key=settings.meta_api_key,
+            base_url=settings.meta_base_url,
+            model=settings.chat_model,
+        )
+    return MockMuse()
+
+
+def _send_promo_card(
+    settings: Settings,
+    log: ActionLog,
+    store: WhatsAppStore,
+    http: httpx.Client | None,
+    customer_id: int,
+) -> dict:
+    conn = connect(settings.db_path)
+    try:
+        row = conn.execute(
+            "SELECT id FROM offers WHERE customer_id = ? ORDER BY id DESC LIMIT 1",
+            (customer_id,),
+        ).fetchone()
+        if row is None:
+            raise WhatsAppError("There is no offer to put on a promo card.")
+        offer_id = int(row["id"])
+        offer = load_offer_for_card(conn, offer_id)
+    finally:
+        conn.close()
+    if offer is None:
+        raise WhatsAppError("There is no offer to put on a promo card.")
+    path = settings.output_dir / "promo" / promo_filename(offer_id)
+    if not path.exists():
+        card = build_promo_image(
+            offer,
+            mode=settings.llm_mode,
+            api_key=settings.meta_api_key,
+            base_url=settings.meta_base_url,
+            model=settings.image_model,
+        )
+        saved = save_promo_image(card.image, settings.output_dir, offer_id)
+        log.append(
+            kind="model_call",
+            actor="agent",
+            payload={
+                "customer_id": customer_id,
+                "task": "promo_card",
+                "model": card.model,
+                "offer_id": offer_id,
+                "latency_ms": card.latency_ms,
+                "path": str(saved),
+                "url": f"/media/promo/{promo_filename(offer_id)}",
+                "finish_reason": "stop",
+                "attempt": 1,
+                "max_tokens": None,
+                "usage": {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "reasoning_tokens": 0,
+                    "total_tokens": 0,
+                },
+            },
+        )
+    return send_promo(settings, settings.channel, log, store, http, offer_id)
+
+
+def _print_delivery(result: dict) -> None:
+    label = result.get("sent") or "message"
+    if label == "template":
+        label = f"{DEFAULT_TEMPLATE} ({DEFAULT_TEMPLATE_LANGUAGE})"
+    print(f"Sent {label} to {result.get('to_masked')}")
+    if result.get("note"):
+        print(result["note"])
+    print(f"Message id: …{result.get('wamid_tail')}")
+
+
+def _public_error(settings: Settings, exc: Exception) -> str:
+    demo = normalize_phone(settings.whatsapp_demo_to)
+    coded = phone_base64(demo)
+    return redact_wamids(
+        redact(
+            str(exc),
+            settings.whatsapp_token,
+            settings.whatsapp_app_secret,
+            demo,
+            coded,
+            coded[:-1] if len(coded) > 8 else None,
+        )
+    )
 
 
 def run_customer(settings: Settings, customer_id: int) -> int:

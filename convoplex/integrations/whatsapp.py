@@ -8,6 +8,7 @@ unless a caller asks for a real request.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import io
@@ -56,9 +57,58 @@ class StatusUpdate:
 
 @dataclass
 class SendResult:
-    wamid: str
+    wamid_hash: str
+    wamid_tail: str
     to: str
     kind: str
+
+
+WAMID_TAIL_LEN = 6
+_WAMID_RE = re.compile(r"wamid\.[A-Za-z0-9+/_=-]+")
+
+
+def wamid_hash(wamid: str) -> str:
+    """SHA-256 of the Cloud API message id. Safe to store and to match on."""
+    return hashlib.sha256(wamid.encode("utf-8")).hexdigest()
+
+
+def wamid_tail(wamid: str) -> str:
+    """Last few characters for display. The recipient number sits at the front."""
+    return (wamid or "")[-WAMID_TAIL_LEN:]
+
+
+def public_wamid(wamid: str) -> dict[str, str]:
+    return {"wamid_hash": wamid_hash(wamid), "wamid_tail": wamid_tail(wamid)}
+
+
+def phone_base64(digits: str) -> str:
+    """Unpadded base64 of the phone digits. A wamid embeds this near the front."""
+    if not digits:
+        return ""
+    return base64.b64encode(digits.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def redact_wamids(text: str) -> str:
+    """Replace a full Cloud API message id with its short tail."""
+
+    def repl(match: re.Match[str]) -> str:
+        full = match.group(0)
+        if len(full) <= WAMID_TAIL_LEN:
+            return "…"
+        return "…" + full[-WAMID_TAIL_LEN:]
+
+    return _WAMID_RE.sub(repl, text)
+
+
+def scrub_wamids(value):
+    """Copy JSON-like data with every full message id reduced to its tail."""
+    if isinstance(value, str):
+        return redact_wamids(value)
+    if isinstance(value, list):
+        return [scrub_wamids(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): scrub_wamids(item) for key, item in value.items()}
+    return value
 
 
 def normalize_phone(value: str | None) -> str:
@@ -368,10 +418,14 @@ class WhatsAppClient:
         self._http = http
 
     def _secrets(self) -> tuple[str | None, ...]:
+        demo = normalize_phone(self.settings.whatsapp_demo_to)
+        coded = phone_base64(demo)
         return (
             self.settings.whatsapp_token,
             self.settings.whatsapp_app_secret,
-            normalize_phone(self.settings.whatsapp_demo_to),
+            demo,
+            coded,
+            coded[:-1] if len(coded) > 8 else None,
         )
 
     def _destination(self, requested: str | None) -> str:
@@ -405,7 +459,7 @@ class WhatsAppClient:
             if owns:
                 http.close()
         if response.status_code >= 400:
-            detail = redact(response.text[:300], *self._secrets())
+            detail = redact_wamids(redact(response.text[:300], *self._secrets()))
             raise WhatsAppError(f"Graph returned HTTP {response.status_code}: {detail}")
         return response
 
@@ -431,8 +485,7 @@ class WhatsAppClient:
         if not text:
             raise WhatsAppError("Refusing to send an empty WhatsApp message.")
         spec = build_send_text_request(self._phone_id(), dest, text[:TEXT_LIMIT], self._version())
-        wamid = self._post_messages(spec)
-        return SendResult(wamid=wamid, to=dest, kind="text")
+        return SendResult(**public_wamid(self._post_messages(spec)), to=dest, kind="text")
 
     def send_template(
         self,
@@ -449,8 +502,7 @@ class WhatsAppClient:
             language=language,
             version=self._version(),
         )
-        wamid = self._post_messages(spec)
-        return SendResult(wamid=wamid, to=dest, kind="template")
+        return SendResult(**public_wamid(self._post_messages(spec)), to=dest, kind="template")
 
     def send_image(self, to: str, image_webp: bytes, caption: str) -> SendResult:
         dest = self._destination(to)
@@ -463,8 +515,7 @@ class WhatsAppClient:
             (caption or "")[:CAPTION_LIMIT],
             self._version(),
         )
-        wamid = self._post_messages(spec)
-        return SendResult(wamid=wamid, to=dest, kind="image")
+        return SendResult(**public_wamid(self._post_messages(spec)), to=dest, kind="image")
 
     def _upload_jpeg(self, jpeg: bytes) -> str:
         spec = build_upload_media_request(self._phone_id(), self._version())

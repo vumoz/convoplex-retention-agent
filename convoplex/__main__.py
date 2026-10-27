@@ -11,7 +11,7 @@ from convoplex.integrations.images import clear_promo_cards
 from convoplex.llm import LLMError
 from convoplex.synthetic.generate import DEFAULT_CUSTOMERS, DEFAULT_SEED, generate
 from convoplex.tunnel import callback_url, format_webhook_banner, start_quick_tunnel
-from convoplex.whatsapp_flow import run_check, run_customer, run_send_template, store_for
+from convoplex.whatsapp_flow import run_check, run_customer, run_send_template, run_winback, store_for
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -55,6 +55,17 @@ def main(argv: list[str] | None = None) -> int:
     wa_sub.add_parser("send-template", help="Send the hello_world template to WHATSAPP_DEMO_TO")
     customer_cmd = wa_sub.add_parser("customer", help="Map inbound WhatsApp messages to a synthetic customer")
     customer_cmd.add_argument("customer_id", type=int)
+    winback_cmd = wa_sub.add_parser(
+        "winback",
+        help="Send the win-back for a synthetic customer on the demo phone",
+    )
+    winback_cmd.add_argument("--customer", type=int, required=True, help="Synthetic customer id")
+    winback_cmd.add_argument("--lang", choices=("en", "pcm"), default=None, help="Language for a new win-back draft")
+    winback_cmd.add_argument(
+        "--promo-card",
+        action="store_true",
+        help="Also draw the promo card, if needed, and send it the same way as the offer endpoint",
+    )
 
     serve_cmd = sub.add_parser("serve", help="Run the FastAPI app")
     serve_cmd.add_argument("--host", default="127.0.0.1")
@@ -124,6 +135,13 @@ def main(argv: list[str] | None = None) -> int:
             return run_send_template(settings)
         if args.wa_cmd == "customer":
             return run_customer(settings, args.customer_id)
+        if args.wa_cmd == "winback":
+            return run_winback(
+                settings,
+                args.customer,
+                language=args.lang,
+                promo_card=args.promo_card,
+            )
         parser.error(f"unknown whatsapp command {args.wa_cmd}")
         return 2
 

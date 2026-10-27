@@ -1,8 +1,8 @@
 """Small JSON file for the WhatsApp session.
 
 The action log stays append-only. This file holds the demo customer, the 24-hour
-window, seen message ids, and delivery ticks. It stores no tokens and no full
-phone numbers.
+window, seen message-id hashes, and delivery ticks. It stores no tokens, no full
+phone numbers, and no full WhatsApp message ids.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from convoplex.config import Settings
+from convoplex.integrations.whatsapp import wamid_hash
 
 WINDOW = timedelta(hours=24)
 SEEN_LIMIT = 2000
@@ -76,6 +77,35 @@ def prefer_status(current: str | None, new: str) -> str:
     return current or new
 
 
+def canonical_message_id(value: str) -> str:
+    """Store a hash once a raw Cloud API id has been seen."""
+    text = str(value or "")
+    if text.startswith("wamid."):
+        return wamid_hash(text)
+    return text
+
+
+def canonicalize_state(state: dict) -> bool:
+    """Rewrite any persisted raw message id to its hash. Returns True if it changed."""
+    changed = False
+    seen: list[str] = []
+    for item in state.get("seen_ids") or []:
+        text = str(item)
+        nxt = canonical_message_id(text)
+        changed = changed or nxt != text
+        seen.append(nxt)
+    state["seen_ids"] = seen
+    statuses: dict[str, str] = {}
+    for key, value in (state.get("statuses") or {}).items():
+        text = str(key)
+        nxt = canonical_message_id(text)
+        changed = changed or nxt != text
+        if isinstance(value, str):
+            statuses[nxt] = value
+    state["statuses"] = statuses
+    return changed
+
+
 def stamp_from_message(timestamp: str | None, now: datetime) -> datetime:
     parsed = parse_stamp(timestamp)
     if parsed is None:
@@ -110,6 +140,8 @@ class WhatsAppStore:
             state["seen_ids"] = []
         if not isinstance(state.get("statuses"), dict):
             state["statuses"] = {}
+        if canonicalize_state(state):
+            self._write_unlocked(state)
         return state
 
     def update(self, mutate) -> dict:
@@ -134,15 +166,30 @@ class WhatsAppStore:
                     base["seen_ids"] = []
                 if not isinstance(base.get("statuses"), dict):
                     base["statuses"] = {}
+                canonicalize_state(base)
                 mutate(base)
-                handle.seek(0)
-                handle.truncate()
-                handle.write(json.dumps(base, ensure_ascii=False, separators=(",", ":")))
-                handle.flush()
-                os.fsync(handle.fileno())
+                canonicalize_state(base)
+                self._write_handle(handle, base)
                 return base
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    def _write_unlocked(self, state: dict) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                self._write_handle(handle, state)
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    @staticmethod
+    def _write_handle(handle, state: dict) -> None:
+        handle.seek(0)
+        handle.truncate()
+        handle.write(json.dumps(state, ensure_ascii=False, separators=(",", ":")))
+        handle.flush()
+        os.fsync(handle.fileno())
 
     def demo_customer_id(self) -> int | None:
         value = self.load().get("demo_customer_id")

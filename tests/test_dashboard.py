@@ -19,6 +19,7 @@ def test_dashboard_page_and_thread(shop, tmp_path):
     assert "WhatsApp" in html
     assert "Simulator" in html
     assert "WhatsApp live" in html
+    assert "wamid_tail" in html
     assert "Send on WhatsApp" in html
     assert 'id="channel-toggle"' in html
     assert 'id="wa-status"' in html

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import io
@@ -29,7 +30,10 @@ from convoplex.integrations.whatsapp import (
     mask_phone,
     normalize_phone,
     parse_statuses,
+    phone_base64,
     signature_matches,
+    wamid_hash,
+    wamid_tail,
     webp_to_jpeg,
 )
 from convoplex.tunnel import parse_quick_tunnel_url, start_quick_tunnel
@@ -92,7 +96,9 @@ def test_allow_list_refuses_simulator_and_synthetic_numbers(tmp_path):
 
     sent = live.send_text(DEMO, "Hello from Convoplex")
     assert sent.to == DEMO_DIGITS
-    assert sent.wamid == "wamid.OUT"
+    assert sent.wamid_hash == wamid_hash("wamid.OUT")
+    assert sent.wamid_tail == wamid_tail("wamid.OUT")
+    assert "wamid.OUT" not in sent.wamid_hash
     body = json.loads(calls[0].content)
     assert body["to"] == DEMO_DIGITS
     assert SYNTHETIC not in calls[0].content.decode()
@@ -294,7 +300,7 @@ def test_inbound_text_is_deduped_and_replied_only_to_the_demo_phone(shop, tmp_pa
     )
     assert first.status_code == 200
     assert first.json()["processed"] is True
-    assert first.json()["accepted"] == ["wamid.IN.1"]
+    assert first.json()["accepted"] == [wamid_tail("wamid.IN.1")]
     second = client.post(
         "/v1/whatsapp/webhook",
         content=raw,
@@ -302,7 +308,7 @@ def test_inbound_text_is_deduped_and_replied_only_to_the_demo_phone(shop, tmp_pa
     )
     assert second.status_code == 200
     assert second.json()["processed"] is False
-    assert second.json()["duplicates"] == ["wamid.IN.1"]
+    assert second.json()["duplicates"] == [wamid_tail("wamid.IN.1")]
 
     stranger = _inbound("wamid.IN.2", SYNTHETIC, "Yes o")
     stranger_raw = json.dumps(stranger).encode()
@@ -415,7 +421,10 @@ def test_status_webhooks_show_ticks_and_do_not_move_backwards(shop, tmp_path):
     client = TestClient(_live_app(shop, tmp_path, calls, app_secret=SECRET))
     WhatsAppStore(tmp_path / "output" / "whatsapp_state.json").note_inbound(datetime.now(timezone.utc))
     sent = client.post("/v1/customers/1/whatsapp")
-    wamid = sent.json()["wamid"]
+    raw_id = "wamid.TEXT"
+    assert sent.json()["wamid_hash"] == wamid_hash(raw_id)
+    assert sent.json()["wamid_tail"] == wamid_tail(raw_id)
+    assert raw_id not in sent.text
     assert client.get("/v1/customers/1/thread").json()["messages"][-1]["whatsapp"]["status"] == "sent"
 
     def post_status(status: str) -> None:
@@ -426,7 +435,7 @@ def test_status_webhooks_show_ticks_and_do_not_move_backwards(shop, tmp_path):
                         {
                             "value": {
                                 "statuses": [
-                                    {"id": wamid, "status": status, "recipient_id": DEMO_DIGITS, "timestamp": "1"}
+                                    {"id": raw_id, "status": status, "recipient_id": DEMO_DIGITS, "timestamp": "1"}
                                 ]
                             }
                         }
@@ -575,7 +584,8 @@ def test_cli_check_send_template_customer_and_serve_banner(shop, tmp_path, monke
     sent = capsys.readouterr().out
     assert "hello_world" in sent
     assert "••11" in sent
-    assert "wamid.HELLO" in sent
+    assert wamid_tail("wamid.HELLO") in sent
+    assert "wamid.HELLO" not in sent
     assert DEMO_DIGITS not in sent
     assert TOKEN not in sent
 
@@ -736,6 +746,156 @@ def test_live_webhook_rejects_unsigned_posts_and_simulator_does_not(shop, tmp_pa
     assert missing_header.json()["detail"] == "invalid signature"
 
 
+def test_outputs_omit_the_base64_demo_number_and_status_matches_by_hash(shop, tmp_path, monkeypatch, capsys):
+    raw_id = _embedded_wamid(DEMO_DIGITS)
+    coded = phone_base64(DEMO_DIGITS)
+    assert coded in raw_id
+    assert coded not in wamid_tail(raw_id)
+    assert coded not in wamid_hash(raw_id)
+
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json={"messages": [{"id": raw_id}]})
+
+    client = TestClient(
+        _app(
+            shop,
+            tmp_path,
+            channel="whatsapp",
+            whatsapp_token=TOKEN,
+            whatsapp_phone_number_id=PHONE_ID,
+            whatsapp_verify_token="verify-me",
+            whatsapp_app_secret=SECRET,
+            whatsapp_demo_to=DEMO,
+            whatsapp_http=httpx.Client(transport=httpx.MockTransport(handler)),
+        )
+    )
+    sent = client.post("/v1/customers/1/whatsapp")
+    assert sent.status_code == 200
+    assert sent.json()["sent"] == "template"
+    assert sent.json()["wamid_hash"] == wamid_hash(raw_id)
+    assert sent.json()["wamid_tail"] == wamid_tail(raw_id)
+    _assert_number_hidden(sent.text, raw_id, coded)
+
+    thread = client.get("/v1/customers/1/thread")
+    assert thread.json()["messages"][-1]["whatsapp"]["wamid_tail"] == wamid_tail(raw_id)
+    assert thread.json()["messages"][-1]["whatsapp"]["status"] == "sent"
+    _assert_number_hidden(thread.text, raw_id, coded)
+    actions = client.get("/v1/actions")
+    _assert_number_hidden(actions.text, raw_id, coded)
+    log_path = tmp_path / "actions.jsonl"
+    state_path = tmp_path / "output" / "whatsapp_state.json"
+    _assert_number_hidden(log_path.read_text(), raw_id, coded)
+    _assert_number_hidden(state_path.read_text(), raw_id, coded)
+    assert wamid_hash(raw_id) in state_path.read_text()
+
+    payload = {
+        "entry": [
+            {
+                "changes": [
+                    {
+                        "value": {
+                            "statuses": [
+                                {"id": raw_id, "status": "read", "recipient_id": DEMO_DIGITS, "timestamp": "1"}
+                            ]
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+    body = json.dumps(payload).encode()
+    status = client.post(
+        "/v1/whatsapp/webhook",
+        content=body,
+        headers={"Content-Type": "application/json", "X-Hub-Signature-256": _sign(body)},
+    )
+    assert status.status_code == 200
+    _assert_number_hidden(status.text, raw_id, coded)
+    updated = client.get("/v1/customers/1/thread").json()
+    assert updated["messages"][-1]["whatsapp"]["status"] == "read"
+    _assert_number_hidden(json.dumps(updated), raw_id, coded)
+    _assert_number_hidden(log_path.read_text(), raw_id, coded)
+    _assert_number_hidden(state_path.read_text(), raw_id, coded)
+    _assert_number_hidden(client.get("/").text, raw_id, coded)
+
+    db_file = shop.execute("PRAGMA database_list").fetchone()["file"]
+    monkeypatch.setenv("CONVOPLEX_DB", db_file)
+    monkeypatch.setenv("CONVOPLEX_LOG", str(log_path))
+    monkeypatch.setenv("CONVOPLEX_OUTPUT", str(tmp_path / "output"))
+    monkeypatch.setenv("WHATSAPP_TOKEN", TOKEN)
+    monkeypatch.setenv("WHATSAPP_PHONE_NUMBER_ID", PHONE_ID)
+    monkeypatch.setenv("WHATSAPP_VERIFY_TOKEN", "verify-me")
+    monkeypatch.setenv("WHATSAPP_DEMO_TO", DEMO)
+    monkeypatch.setenv("CONVOPLEX_CHANNEL", "whatsapp")
+    monkeypatch.setattr(
+        "convoplex.integrations.whatsapp.default_graph_http",
+        lambda: httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    assert main(["whatsapp", "send-template"]) == 0
+    printed = capsys.readouterr()
+    assert wamid_tail(raw_id) in printed.out
+    _assert_number_hidden(printed.out + printed.err, raw_id, coded)
+    _assert_number_hidden(log_path.read_text(), raw_id, coded)
+
+
+def test_whatsapp_winback_cli_matches_the_customer_send(shop, tmp_path, monkeypatch, capsys):
+    db_file = shop.execute("PRAGMA database_list").fetchone()["file"]
+    monkeypatch.setenv("CONVOPLEX_DB", db_file)
+    monkeypatch.setenv("CONVOPLEX_LOG", str(tmp_path / "actions.jsonl"))
+    monkeypatch.setenv("CONVOPLEX_OUTPUT", str(tmp_path / "output"))
+    monkeypatch.setenv("WHATSAPP_TOKEN", TOKEN)
+    monkeypatch.setenv("WHATSAPP_PHONE_NUMBER_ID", PHONE_ID)
+    monkeypatch.setenv("WHATSAPP_VERIFY_TOKEN", "verify-me")
+    monkeypatch.setenv("WHATSAPP_DEMO_TO", DEMO)
+    monkeypatch.setenv("CONVOPLEX_CHANNEL", "simulator")
+    raw_id = _embedded_wamid(DEMO_DIGITS)
+    coded = phone_base64(DEMO_DIGITS)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"messages": [{"id": raw_id}]})
+
+    monkeypatch.setattr(
+        "convoplex.integrations.whatsapp.default_graph_http",
+        lambda: httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    assert main(["whatsapp", "winback", "--customer", "1"]) == 1
+    refused = capsys.readouterr().err
+    assert "CONVOPLEX_CHANNEL" in refused
+    assert coded not in refused
+
+    monkeypatch.setenv("CONVOPLEX_CHANNEL", "whatsapp")
+    assert main(["whatsapp", "winback", "--customer", "99"]) == 1
+    assert "Unknown customer" in capsys.readouterr().err
+
+    assert main(["whatsapp", "winback", "--customer", "2", "--lang", "pcm"]) == 0
+    drafted = capsys.readouterr().out
+    assert "hello_world" in drafted
+    assert "24-hour" in drafted
+    assert wamid_tail(raw_id) in drafted
+    _assert_number_hidden(drafted, raw_id, coded)
+    language = shop.execute(
+        "SELECT language FROM offers WHERE customer_id = 2 ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert language["language"] == "pcm"
+
+    assert main(["whatsapp", "winback", "--customer", "1", "--lang", "en", "--promo-card"]) == 0
+    promo = capsys.readouterr().out
+    assert "Promo card:" in promo
+    assert "hello_world" in promo
+    _assert_number_hidden(promo, raw_id, coded)
+    cards = list((tmp_path / "output" / "promo").glob("offer-*.webp"))
+    assert len(cards) == 1
+    spoken = shop.execute(
+        "SELECT language FROM offers WHERE customer_id = 1 ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert spoken["language"] == "en"
+    _assert_number_hidden((tmp_path / "actions.jsonl").read_text(), raw_id, coded)
+    _assert_number_hidden((tmp_path / "output" / "whatsapp_state.json").read_text(), raw_id, coded)
+
+
 def test_quick_tunnel_parser_and_missing_binary(monkeypatch):
     sample = (
         "INF |  https://random-name.trycloudflare.com                                                     |\n"
@@ -780,6 +940,19 @@ def _live_app(shop, tmp_path, calls: list[httpx.Request], *, channel: str = "wha
         whatsapp_demo_to=DEMO,
         whatsapp_http=httpx.Client(transport=httpx.MockTransport(handler)),
     )
+
+
+def _embedded_wamid(phone: str) -> str:
+    """A Cloud-API-like id whose base64 body contains the phone digits."""
+    body = b"\x1c\x18" + bytes([len(phone)]) + phone.encode() + b"\x15\x02\x00\x01\x12\x14" + b"0123456789abcdefABCD"
+    token = base64.b64encode(body).decode().rstrip("=")
+    return "wamid." + token
+
+
+def _assert_number_hidden(text: str, raw_id: str, coded: str) -> None:
+    assert raw_id not in text
+    assert coded not in text
+    assert "wamid." not in text
 
 
 def _inbound(message_id: str, sender: str, text: str) -> dict:

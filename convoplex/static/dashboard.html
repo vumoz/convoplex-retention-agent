@@ -750,7 +750,8 @@
         }
         const who = message.role === "shop" ? "Shop" : "Customer";
         const intent = message.intent ? ` · ${message.intent}` : "";
-        const stamp = el("span", "stamp", `${who}${intent} · ${clock(message.ts)}`);
+        const tail = message.whatsapp && message.whatsapp.wamid_tail ? ` · …${message.whatsapp.wamid_tail}` : "";
+        const stamp = el("span", "stamp", `${who}${intent} · ${clock(message.ts)}${tail}`);
         const ticks = tickSpan(message.whatsapp && message.whatsapp.status);
         if (ticks) stamp.append(ticks);
         bubble.append(stamp);
@@ -838,9 +839,10 @@
       if (entry.kind === "model_call" && payload.task === "promo_card") {
         return `${payload.model} · offer ${payload.offer_id} · ${payload.latency_ms} ms`;
       }
-      if (entry.kind === "whatsapp_send") return `${payload.kind || "send"} · ${payload.to_masked || ""}`;
-      if (entry.kind === "whatsapp_status") return `${payload.status || "status"} · ${payload.to_masked || ""}`;
-      if (entry.kind === "whatsapp_inbound") return `${payload.kind || "inbound"} · ${payload.from_masked || ""}`;
+      const tail = payload.wamid_tail ? ` · …${payload.wamid_tail}` : "";
+      if (entry.kind === "whatsapp_send") return `${payload.kind || "send"} · ${payload.to_masked || ""}${tail}`;
+      if (entry.kind === "whatsapp_status") return `${payload.status || "status"} · ${payload.to_masked || ""}${tail}`;
+      if (entry.kind === "whatsapp_inbound") return `${payload.kind || "inbound"} · ${payload.from_masked || ""}${tail}`;
       if (entry.kind === "tool_call") return payload.name || "tool";
       if (entry.kind === "tool_result") return `${payload.name || "tool"} ${payload.ok ? "ok" : "failed"}`;
       if (entry.kind === "model_call") return `${payload.task || "chat"} · ${payload.latency_ms || 0} ms`;

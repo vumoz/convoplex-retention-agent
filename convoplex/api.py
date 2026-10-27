@@ -35,6 +35,9 @@ from convoplex.integrations.whatsapp import (
     normalize_phone,
     parse_inbound,
     parse_statuses,
+    public_wamid,
+    redact_wamids,
+    scrub_wamids,
     signature_matches,
     verify_subscription,
 )
@@ -241,7 +244,7 @@ def create_app(settings: Settings | None = None, *, generate_if_missing: bool = 
     @app.get("/v1/actions")
     def actions(limit: int = Query(100, ge=1, le=1000)):
         entries = app.state.log.read_all()
-        return {"entries": entries[-limit:], "count": len(entries)}
+        return {"entries": scrub_wamids(entries[-limit:]), "count": len(entries)}
 
     @app.post("/v1/actions/verify")
     def verify_actions():
@@ -369,8 +372,9 @@ def create_app(settings: Settings | None = None, *, generate_if_missing: bool = 
             if item.kind not in {"text", "audio"}:
                 ignored += 1
                 continue
-            if not store.claim(item.message_id):
-                duplicates.append(item.message_id)
+            public = public_wamid(item.message_id)
+            if not store.claim(public["wamid_hash"]):
+                duplicates.append(public["wamid_tail"])
                 continue
             store.note_inbound(stamp_from_message(item.timestamp, moment))
             accepted.append(item)
@@ -390,7 +394,7 @@ def create_app(settings: Settings | None = None, *, generate_if_missing: bool = 
         return {
             "status": "ok",
             "processed": bool(accepted),
-            "accepted": [item.message_id for item in accepted],
+            "accepted": [public_wamid(item.message_id)["wamid_tail"] for item in accepted],
             "duplicates": duplicates,
             "ignored": ignored,
             "statuses": status_count,
@@ -695,17 +699,18 @@ def _thread_messages(entries: list[dict], customer_id: int, statuses: dict[str, 
 
 def _whatsapp_view(entry: dict, statuses: dict[str, str]) -> dict:
     payload = entry.get("payload") or {}
-    wamid = payload.get("wamid")
-    status = statuses.get(wamid) if wamid else None
+    digest = payload.get("wamid_hash")
+    status = statuses.get(digest) if digest else None
     if status is None:
         status = payload.get("status")
     return {
         "kind": payload.get("kind"),
         "status": status,
         "to_masked": payload.get("to_masked"),
-        "wamid": wamid,
-        "note": payload.get("note") or "",
-        "caption": payload.get("caption") or "",
+        "wamid_hash": digest,
+        "wamid_tail": payload.get("wamid_tail"),
+        "note": redact_wamids(payload.get("note") or ""),
+        "caption": redact_wamids(payload.get("caption") or ""),
         "ts": entry.get("ts"),
     }
 
