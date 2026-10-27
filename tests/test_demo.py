@@ -25,6 +25,50 @@ def test_mock_demo_end_to_end(tmp_path):
     assert "SYNTHETIC" not in result.winback_message
 
 
+def test_scenario_replies_can_decline_without_an_order(tmp_path, monkeypatch, capsys):
+    from convoplex.context import list_at_risk
+    from convoplex.db import connect
+    from convoplex.synthetic.generate import generate
+
+    db_path = tmp_path / "scenario.sqlite"
+    log_path = tmp_path / "scenario.jsonl"
+    generate(db_path, n_customers=40, seed=3)
+    conn = connect(db_path)
+    ranked = [
+        row
+        for row in list_at_risk(conn, limit=40)
+        if row.get("favourite_product") and row["favourite_product"]["stock_qty"] > 0
+    ]
+    customer_id = ranked[0]["id"]
+    conn.close()
+    monkeypatch.setenv("CONVOPLEX_DB", str(db_path))
+    monkeypatch.setenv("CONVOPLEX_LOG", str(log_path))
+    code = main(
+        [
+            "demo",
+            "--mock",
+            "--customer",
+            str(customer_id),
+            "--lang",
+            "en",
+            "--reply",
+            "No thank you, maybe next month",
+            "--reply",
+            "How much is it?",
+        ]
+    )
+    assert code == 0
+    printed = capsys.readouterr().out
+    assert "English" in printed
+    assert "No order placed." in printed
+    assert "Agent (decline):" in printed
+    assert "Agent (question):" in printed
+    assert "Order #" not in printed
+    missing = main(["demo", "--mock", "--customer", "999999"])
+    assert missing == 1
+    assert "Unknown customer" in capsys.readouterr().err
+
+
 def test_cli_demo_and_verify(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("CONVOPLEX_DB", str(tmp_path / "cli.sqlite"))
     monkeypatch.setenv("CONVOPLEX_LOG", str(tmp_path / "cli.jsonl"))

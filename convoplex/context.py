@@ -11,12 +11,58 @@ from convoplex.scoring import LapseScore, OrderFact, score_orders
 AT_RISK_SEGMENTS = ("at_risk", "lapsed")
 
 
+def payday_calendar(as_of: date) -> dict:
+    """Whether month-end salary day is upcoming, in the window, or just passed.
+
+    The window is the 25th through the 3rd. On the 27th the window is open, but
+    it is too early to say salary has already entered.
+    """
+    today = as_of.isoformat()
+    if as_of.day <= 3:
+        return {
+            "today": today,
+            "status": "passed",
+            "instruction": (
+                f"Today is {today}. Month-end payday has just passed "
+                "(salaries often land between the 25th and the 3rd). "
+                "You may say salary don enter for many people. Do not say everyone has been paid."
+            ),
+        }
+    if as_of.day >= 25:
+        return {
+            "today": today,
+            "status": "open",
+            "instruction": (
+                f"Today is {today}. The payday window opened on the 25th and runs through the 3rd. "
+                "Salary has not necessarily entered yet. Do not write that salary 'don enter' "
+                "or has already been paid. Say the window just opened, or that payday dey near."
+            ),
+        }
+    return {
+        "today": today,
+        "status": "upcoming",
+        "instruction": (
+            f"Today is {today}. Month-end payday is upcoming; it starts on the 25th. "
+            "Do not say salary has entered or 'don enter'."
+        ),
+    }
+
+
 def local_context(as_of: date) -> list[str]:
     """Payday and festive notes a Lagos shop would actually use in a message."""
     notes: list[str] = []
-    if as_of.day >= 25 or as_of.day <= 3:
+    payday = payday_calendar(as_of)
+    if payday["status"] == "passed":
         notes.append(
-            "Month-end payday window: many salaried customers are paid between the 25th and the 3rd, which is when they restock the house."
+            "Payday has just passed (25th through the 3rd). Many salaries have landed; do not claim all of them have."
+        )
+    elif payday["status"] == "open":
+        notes.append(
+            "Payday window is open (25th through the 3rd) but it is early. Do not say salary don enter. Say payday dey near."
+        )
+    else:
+        notes.append(
+            "Month-end payday is still upcoming, from the 25th. Do not say salary has entered."
         )
     if as_of.month == 4 and as_of.day <= 12:
         notes.append("Easter season: family visits lift provisions and outfits.")
@@ -244,16 +290,25 @@ def open_offer(conn: sqlite3.Connection, customer_id: int) -> dict | None:
     }
 
 
-def agent_context(conn: sqlite3.Connection, customer_id: int, task: str) -> dict | None:
+def agent_context(
+    conn: sqlite3.Connection,
+    customer_id: int,
+    task: str,
+    language: str | None = None,
+) -> dict | None:
     profile = get_customer(conn, customer_id)
     if profile is None:
         return None
+    if language is not None and language not in {"en", "pcm"}:
+        raise ValueError("language must be 'en' or 'pcm'")
     favourite = profile["favourite_product"]
+    as_of = date.fromisoformat(profile["as_of"])
+    spoken = language or profile["language"]
     context = {
         "task": task,
         "customer_id": profile["id"],
         "full_name": profile["full_name"],
-        "language": profile["language"],
+        "language": spoken,
         "city": profile["city"],
         "area": profile["area"],
         "retailer_id": profile["retailer_id"],
@@ -268,7 +323,9 @@ def agent_context(conn: sqlite3.Connection, customer_id: int, task: str) -> dict
         "reasons": profile["reasons"],
         "suggested_qty": profile["suggested_qty"],
         "favourite_product": favourite,
-        "local_context": local_context(date.fromisoformat(profile["as_of"])),
+        "local_context": local_context(as_of),
+        "today": as_of.isoformat(),
+        "payday": payday_calendar(as_of),
         "as_of": profile["as_of"],
         "currency": "NGN",
     }

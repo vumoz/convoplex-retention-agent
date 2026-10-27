@@ -1,6 +1,6 @@
 from datetime import date
 
-from convoplex.context import local_context
+from convoplex.context import local_context, payday_calendar
 from convoplex.scoring import OrderFact, classify, score_orders
 
 
@@ -64,5 +64,14 @@ def test_local_context_mentions_payday_and_festivals():
     assert "democracy day" in " ".join(local_context(date(2026, 6, 12))).lower()
     assert "new yam" in " ".join(local_context(date(2026, 8, 15))).lower()
     assert "christmas" in " ".join(local_context(date(2026, 12, 20))).lower()
-    assert local_context(date(2026, 1, 15)) == []
+    january = " ".join(local_context(date(2026, 1, 15))).lower()
+    assert "upcoming" in january
+    assert "25th" in january
+    assert "don enter" not in january
+    october = " ".join(local_context(date(2026, 10, 27))).lower()
+    assert "do not say salary don enter" in october
     assert "easter" in " ".join(local_context(date(2026, 4, 5))).lower()
+    assert payday_calendar(date(2026, 10, 27))["status"] == "open"
+    assert payday_calendar(date(2026, 10, 27))["today"] == "2026-10-27"
+    assert payday_calendar(date(2026, 1, 2))["status"] == "passed"
+    assert payday_calendar(date(2026, 1, 15))["status"] == "upcoming"

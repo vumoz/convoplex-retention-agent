@@ -8,7 +8,30 @@ from convoplex.context import list_at_risk
 from convoplex.db import scenario_as_of
 
 
-def snapshot(conn: sqlite3.Connection) -> dict:
+def usage_totals(entries: list[dict] | None) -> dict:
+    prompt = completion = reasoning = total = latency = calls = 0
+    for entry in entries or []:
+        if entry.get("kind") != "model_call":
+            continue
+        payload = entry.get("payload") or {}
+        usage = payload.get("usage") or {}
+        calls += 1
+        prompt += int(usage.get("prompt_tokens") or 0)
+        completion += int(usage.get("completion_tokens") or 0)
+        reasoning += int(usage.get("reasoning_tokens") or 0)
+        total += int(usage.get("total_tokens") or 0)
+        latency += int(payload.get("latency_ms") or 0)
+    return {
+        "model_calls": calls,
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "reasoning_tokens": reasoning,
+        "total_tokens": total,
+        "model_latency_ms": latency,
+    }
+
+
+def snapshot(conn: sqlite3.Connection, actions: list[dict] | None = None) -> dict:
     row = conn.execute(
         """
         SELECT
@@ -38,4 +61,5 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         "at_risk_customers": len(at_risk),
         "currency": "NGN",
         "synthetic": True,
+        **usage_totals(actions),
     }

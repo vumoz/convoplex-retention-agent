@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass, field
 
 import httpx
@@ -56,7 +57,9 @@ DECLINE = (
 
 
 class LLMError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, calls: list | None = None):
+        super().__init__(message)
+        self.calls = list(calls or [])
 
 
 def classify_reply(text: str) -> str:
@@ -101,10 +104,56 @@ class ToolCall:
 
 
 @dataclass
+class ModelCall:
+    """One chat completion attempt, including a length retry."""
+
+    latency_ms: int
+    usage: dict
+    finish_reason: str
+    max_tokens: int
+    attempt: int
+
+
+def empty_usage() -> dict:
+    return {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "reasoning_tokens": 0,
+        "total_tokens": 0,
+    }
+
+
+def _as_int_token(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def usage_from_body(body: dict) -> dict:
+    raw = body.get("usage") if isinstance(body, dict) else None
+    if not isinstance(raw, dict):
+        return empty_usage()
+    details = raw.get("completion_tokens_details") or {}
+    if not isinstance(details, dict):
+        details = {}
+    prompt = _as_int_token(raw.get("prompt_tokens"))
+    completion = _as_int_token(raw.get("completion_tokens"))
+    total = _as_int_token(raw.get("total_tokens")) or (prompt + completion)
+    return {
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "reasoning_tokens": _as_int_token(details.get("reasoning_tokens")),
+        "total_tokens": total,
+    }
+
+
+@dataclass
 class Completion:
     content: str | None
     tool_calls: list[ToolCall] = field(default_factory=list)
     finish_reason: str = "stop"
+    calls: list[ModelCall] = field(default_factory=list)
 
     def assistant_message(self) -> dict:
         message: dict = {"role": "assistant", "content": self.content}
@@ -213,13 +262,51 @@ class LiveMuse:
             raise LLMError(
                 "META_API_KEY is not set. Export it in your shell, or run with CONVOPLEX_LLM=mock."
             )
+        budget = effective_max_tokens(max_tokens, tools)
+        attempts: list[ModelCall] = []
+        first: Completion | None = None
+        for attempt in (1, 2):
+            try:
+                completion, record = self._once(messages, tools=tools, max_tokens=budget, attempt=attempt)
+            except LLMError as exc:
+                exc.calls = list(attempts) + list(exc.calls or [])
+                raise
+            attempts.append(record)
+            completion.calls = list(attempts)
+            if completion.finish_reason != "length":
+                return completion
+            if attempt == 1:
+                first = completion
+                budget *= 2
+                continue
+            if completion.tool_calls or completion.content:
+                return completion
+            if first and (first.tool_calls or first.content):
+                first.calls = list(attempts)
+                return first
+            raise LLMError(
+                "Muse Spark stopped because max_tokens was used up by reasoning "
+                f"(tried {attempts[0].max_tokens}, then {budget}).",
+                calls=attempts,
+            )
+        raise LLMError("Muse Spark did not return a completion.", calls=attempts)
+
+    def _once(
+        self,
+        messages: list[dict],
+        *,
+        tools: list[dict] | None,
+        max_tokens: int,
+        attempt: int,
+    ) -> tuple[Completion, ModelCall]:
         payload: dict = {
             "model": self.model,
             "messages": messages,
-            "max_tokens": effective_max_tokens(max_tokens, tools),
+            "max_tokens": max_tokens,
         }
         if tools:
             payload["tools"] = tools
+        started = time.perf_counter()
         response = self._client.post(
             f"{self.base_url}/chat/completions",
             headers={
@@ -228,6 +315,7 @@ class LiveMuse:
             },
             json=payload,
         )
+        latency_ms = int((time.perf_counter() - started) * 1000)
         if response.status_code >= 400:
             raise LLMError(
                 f"Meta Model API returned HTTP {response.status_code}: {response.text[:500]}"
@@ -254,12 +342,14 @@ class LiveMuse:
                 )
             )
         content = _message_text(message)
-        if finish == "length" and not calls and not content:
-            raise LLMError(
-                "Muse Spark stopped because max_tokens was used up by reasoning. "
-                "Set META_MAX_TOKENS to at least 1000 for tool calls."
-            )
-        return Completion(content=content, tool_calls=calls, finish_reason=finish)
+        record = ModelCall(
+            latency_ms=latency_ms,
+            usage=usage_from_body(body),
+            finish_reason=finish,
+            max_tokens=max_tokens,
+            attempt=attempt,
+        )
+        return Completion(content=content, tool_calls=calls, finish_reason=finish, calls=[record]), record
 
 
 class MockMuse:
@@ -268,12 +358,23 @@ class MockMuse:
     mode = "mock"
 
     def complete(self, messages: list[dict], *, tools: list[dict] | None, max_tokens: int) -> Completion:
-        del tools, max_tokens
         context = parse_context(messages)
         results = tool_results(messages)
         if context.get("task") == "reply":
-            return self._reply(messages, context, results)
-        return self._winback(context, results)
+            completion = self._reply(messages, context, results)
+        else:
+            completion = self._winback(context, results)
+        if not completion.calls:
+            completion.calls = [
+                ModelCall(
+                    latency_ms=0,
+                    usage=empty_usage(),
+                    finish_reason=completion.finish_reason,
+                    max_tokens=effective_max_tokens(max_tokens, tools),
+                    attempt=1,
+                )
+            ]
+        return completion
 
     def _winback(self, context: dict, results: dict[str, dict]) -> Completion:
         favourite = context.get("favourite_product") or {}

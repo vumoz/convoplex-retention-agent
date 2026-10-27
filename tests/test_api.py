@@ -65,6 +65,14 @@ def test_at_risk_winback_reply_and_metrics(shop, tmp_path):
     assert metrics["win_back_rate"] == 0.5
     assert metrics["naira_recovered"] == 70200
     assert metrics["currency"] == "NGN"
+    assert metrics["model_calls"] >= 1
+    assert metrics["prompt_tokens"] == 0
+    assert metrics["completion_tokens"] == 0
+    assert metrics["reasoning_tokens"] == 0
+    assert metrics["total_tokens"] == 0
+    assert metrics["model_latency_ms"] == 0
+    logged = client.get("/v1/actions").json()["entries"]
+    assert any(entry["kind"] == "model_call" and "usage" in entry["payload"] for entry in logged)
 
     verified = client.post("/v1/actions/verify")
     assert verified.json()["ok"] is True
@@ -72,6 +80,48 @@ def test_at_risk_winback_reply_and_metrics(shop, tmp_path):
     actions = client.get("/v1/actions")
     assert actions.json()["count"] == verified.json()["entries"]
     assert client.post("/v1/customers/1/reply", json={"text": ""}).status_code == 422
+
+
+def test_usage_totals_sum_logged_model_calls():
+    from convoplex.metrics import usage_totals
+
+    totals = usage_totals(
+        [
+            {"kind": "message", "payload": {}},
+            {
+                "kind": "model_call",
+                "payload": {
+                    "latency_ms": 1200,
+                    "usage": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 1280,
+                        "reasoning_tokens": 1221,
+                        "total_tokens": 1290,
+                    },
+                },
+            },
+            {
+                "kind": "model_call",
+                "payload": {
+                    "latency_ms": 30,
+                    "usage": {
+                        "prompt_tokens": 4,
+                        "completion_tokens": 8,
+                        "reasoning_tokens": 0,
+                        "total_tokens": 12,
+                    },
+                },
+            },
+        ]
+    )
+    assert totals == {
+        "model_calls": 2,
+        "prompt_tokens": 14,
+        "completion_tokens": 1288,
+        "reasoning_tokens": 1221,
+        "total_tokens": 1302,
+        "model_latency_ms": 1230,
+    }
 
 
 def test_voice_image_and_whatsapp_stubs(shop, tmp_path):

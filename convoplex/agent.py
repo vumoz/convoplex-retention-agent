@@ -29,8 +29,25 @@ class AgentResult:
     llm_mode: str = "mock"
 
 
-def draft_winback(conn, log: ActionLog, llm, customer_id: int, *, max_tokens: int) -> AgentResult:
-    return _run(conn, log, llm, customer_id, task="winback", user_text=None, max_tokens=max_tokens)
+def draft_winback(
+    conn,
+    log: ActionLog,
+    llm,
+    customer_id: int,
+    *,
+    max_tokens: int,
+    language: str | None = None,
+) -> AgentResult:
+    return _run(
+        conn,
+        log,
+        llm,
+        customer_id,
+        task="winback",
+        user_text=None,
+        max_tokens=max_tokens,
+        language=language,
+    )
 
 
 def handle_reply(
@@ -41,18 +58,38 @@ def handle_reply(
     text: str,
     *,
     max_tokens: int,
+    language: str | None = None,
 ) -> AgentResult:
     cleaned = text.strip()
     if not cleaned:
         raise ValueError("reply text is empty")
-    return _run(conn, log, llm, customer_id, task="reply", user_text=cleaned, max_tokens=max_tokens)
+    return _run(
+        conn,
+        log,
+        llm,
+        customer_id,
+        task="reply",
+        user_text=cleaned,
+        max_tokens=max_tokens,
+        language=language,
+    )
 
 
-def _run(conn, log: ActionLog, llm, customer_id: int, *, task: str, user_text: str | None, max_tokens: int) -> AgentResult:
-    profile = agent_context(conn, customer_id, task)
+def _run(
+    conn,
+    log: ActionLog,
+    llm,
+    customer_id: int,
+    *,
+    task: str,
+    user_text: str | None,
+    max_tokens: int,
+    language: str | None = None,
+) -> AgentResult:
+    profile = agent_context(conn, customer_id, task, language=language)
     if profile is None:
         raise LookupError(f"Unknown customer {customer_id}")
-    messages = build_messages(conn, customer_id, task, user_text)
+    messages = build_messages(conn, customer_id, task, user_text, language=language)
     if messages is None:
         raise LookupError(f"Unknown customer {customer_id}")
 
@@ -75,7 +112,12 @@ def _run(conn, log: ActionLog, llm, customer_id: int, *, task: str, user_text: s
     completion: Completion | None = None
 
     for _round in range(1, MAX_ROUNDS + 1):
-        completion = llm.complete(messages, tools=TOOLS, max_tokens=max_tokens)
+        try:
+            completion = llm.complete(messages, tools=TOOLS, max_tokens=max_tokens)
+        except LLMError as exc:
+            _log_model_calls(log, getattr(exc, "calls", None), customer_id, task)
+            raise
+        _log_model_calls(log, completion.calls, customer_id, task)
         messages.append(completion.assistant_message())
         if completion.content and not completion.tool_calls:
             break
@@ -142,7 +184,7 @@ def _run(conn, log: ActionLog, llm, customer_id: int, *, task: str, user_text: s
         text = accept_message(profile, order)
 
     if task == "winback" and offer and offer.get("ok"):
-        mark_offer_sent(conn, int(offer["offer_id"]), text)
+        mark_offer_sent(conn, int(offer["offer_id"]), text, language=profile.get("language"))
         offer = {**offer, "status": "sent", "message": text}
     if task == "reply" and intent == "decline" and profile.get("open_offer"):
         mark_offer_declined(conn, int(profile["open_offer"]["offer_id"]))
@@ -169,6 +211,29 @@ def _run(conn, log: ActionLog, llm, customer_id: int, *, task: str, user_text: s
         tool_trace=trace,
         llm_mode=getattr(llm, "mode", "mock"),
     )
+
+
+def _log_model_calls(log: ActionLog, calls, customer_id: int, task: str) -> None:
+    for call in calls or []:
+        usage = getattr(call, "usage", None) or {}
+        log.append(
+            kind="model_call",
+            actor="agent",
+            payload={
+                "customer_id": customer_id,
+                "task": task,
+                "attempt": getattr(call, "attempt", 1),
+                "max_tokens": getattr(call, "max_tokens", None),
+                "finish_reason": getattr(call, "finish_reason", None),
+                "latency_ms": getattr(call, "latency_ms", None),
+                "usage": {
+                    "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+                    "completion_tokens": int(usage.get("completion_tokens") or 0),
+                    "reasoning_tokens": int(usage.get("reasoning_tokens") or 0),
+                    "total_tokens": int(usage.get("total_tokens") or 0),
+                },
+            },
+        )
 
 
 def _fallback_place(conn: sqlite3.Connection, log: ActionLog, customer_id: int, profile: dict, trace: list[str]) -> dict:

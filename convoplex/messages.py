@@ -15,12 +15,21 @@ def _first(full_name: str) -> str:
 
 
 def _payday_note(ctx: dict) -> str:
-    blob = " ".join(ctx.get("local_context") or []).lower()
+    status = (ctx.get("payday") or {}).get("status")
     pidgin = ctx.get("language") == "pcm"
-    if "payday" in blob:
+    if status == "passed":
         if pidgin:
-            return " Month-end payday dey near, so this one go help."
-        return " Month-end payday is close, so this is a good week to restock."
+            return " Month-end salary don enter for many people, so this one go help."
+        return " Month-end salary has landed for many people, so this is a good week to restock."
+    if status == "open":
+        if pidgin:
+            return " Month-end payday dey near, salary never land yet."
+        return " Month-end payday is close, but salary has not necessarily landed yet."
+    if status == "upcoming":
+        if pidgin:
+            return " Payday still dey come from the 25th. E never enter yet."
+        return " Payday is still upcoming, from the 25th. Salary has not entered yet."
+    blob = " ".join(ctx.get("local_context") or []).lower()
     if blob:
         if pidgin:
             return " Festive season dey come, so e good make you arrange am early."

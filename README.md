@@ -14,8 +14,8 @@ This build is the core, end to end, on synthetic data:
 
 - 500 fictional customers across six shops, with orders from 27 Apr 2026 to 26 Oct 2026. Scores use a scenario date of 27 Oct 2026 so the demo does not drift after the event.
 - RFM-style lapse scoring with a written reason for every customer.
-- A Muse Spark tool loop: `check_stock`, `get_price`, `create_offer`, `place_order`.
-- Messages mention month-end payday and festive seasons when those notes apply.
+- A Muse Spark tool loop: `check_stock`, `get_price`, `create_offer`, `place_order`, and `get_delivery_options` (synthetic pickup and a 1–2 day same-city window). The model is told not to invent a delivery weekday.
+- Messages mention month-end payday and festive seasons when those notes apply. The prompt includes today's scenario date and whether payday is upcoming, open, or just passed, so a message on 27 Oct does not claim salary has already entered.
 - An append-only hash-chained action log, with a verify command.
 - A FastAPI backend for the at-risk list, win-back, replies, metrics, and the log.
 
@@ -25,7 +25,7 @@ Voice notes, promo cards, and the WhatsApp Cloud API are stubbed. Their HTTP con
 
 | Model | Role in this build |
 | --- | --- |
-| `muse-spark-1.3` | Drafts the win-back and handles the reply. OpenAI-compatible `POST /v1/chat/completions` on `https://api.meta.ai/v1`. Tools are the four shop functions. `max_tokens` is at least 1000 because reasoning tokens count against the limit. |
+| `muse-spark-1.3` | Drafts the win-back and handles the reply. OpenAI-compatible `POST /v1/chat/completions` on `https://api.meta.ai/v1`. Tools are the shop functions above. `max_tokens` floors at 2500 while tools are attached, because reasoning tokens count against the limit. A `finish_reason` of `length` is retried once at double that budget. |
 | `muse-voice-transcribe-1.0` | Stub. Client is ready for `POST /v1/asr/transcribe` (multipart JSON `request` part plus mono 16-bit WAV at 16 kHz). OGG voice notes are converted with `ffmpeg -i in.ogg -ac 1 -ar 16000 -sample_fmt s16 out.wav`. |
 | `muse-image-1.0` | Stub. Client is ready for `POST /v1/images/generations` and decodes `data[0].b64_json` as WEBP. |
 
@@ -39,7 +39,7 @@ flowchart LR
   api --> score[Lapse scorer]
   api --> agent[Retention agent]
   score --> db[(SQLite synthetic)]
-  agent --> tools[check_stock get_price create_offer place_order]
+  agent --> tools[check_stock get_price create_offer place_order get_delivery_options]
   tools --> db
   agent --> muse[Muse Spark 1.3 or mock]
   agent --> log[Hash-chained JSONL]
@@ -48,7 +48,7 @@ flowchart LR
 
 Scoring rules, in short: cadence is the median gap between orders, capped at 45 days. Repeat customers still inside 35 days and 1.25× cadence are active. Quiet up to 60 days and within 2× cadence are at risk. Beyond that, up to 120 days, they are lapsed. Longer than 120 days is lost. The priority score weights lapse more heavily than raw spend, and every score comes with the numbers that produced it.
 
-Offers are 5 to 15 percent off the database price. The model cannot name its own price. Accepting an offer places a `whatsapp_sim` order. That label means the conversation was simulated. This build does not send a WhatsApp message.
+Offers are 5 to 15 percent off the database price. The model cannot name its own price. `place_order` caps quantity at the shelf and at 10 units per order. Accepting an offer places a `whatsapp_sim` order. That label means the conversation was simulated. This build does not send a WhatsApp message.
 
 ## Synthetic data
 
@@ -64,8 +64,11 @@ Python 3.11 or newer.
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+pip install -e .
 cp .env.example .env   # optional; put the real key in the shell, not in git
 ```
+
+`pip install -e .` installs the `convoplex` package (and its `integrations` and `synthetic` subpackages). `pytest` adds the repo root to `pythonpath`, so a checkout works without the editable install too.
 
 `.env` is gitignored. `.env.example` has placeholders only.
 
@@ -79,7 +82,18 @@ python -m convoplex verify
 python -m convoplex serve
 ```
 
-`demo` leaves an existing database in place and appends to the action log. `demo --reset` and `generate` write a fresh database; `--reset` also starts a new log, because the old chain would describe a database that no longer exists. The demo picks a lapsed customer who prefers Pidgin, drafts an offer, accepts it with "Yes o, no wahala. Abeg send am today.", places the order, and verifies the action log.
+`demo` leaves an existing database in place and appends to the action log. `demo --reset` and `generate` write a fresh database; `--reset` also starts a new log, because the old chain would describe a database that no longer exists. With no extra flags the demo picks a lapsed customer who prefers Pidgin, drafts an offer, accepts it with "Yes o, no wahala. Abeg send am today.", places the order, and verifies the action log.
+
+To show a decline, a question, or an accept for one customer:
+
+```bash
+python -m convoplex demo --mock --customer 184 --lang pcm \
+  --reply "No thank you, maybe next month" \
+  --reply "How much last price?" \
+  --reply "Ok I go take 2"
+```
+
+`--lang en` or `--lang pcm` overrides the customer's saved language for that run. Repeat `--reply` once per turn. Omit `--reply` to keep the default accepting reply. `--live` uses Muse Spark instead of the mock.
 
 API (after `serve`, default `http://127.0.0.1:8000`):
 
@@ -88,7 +102,7 @@ API (after `serve`, default `http://127.0.0.1:8000`):
 - `GET /v1/customers/{id}`
 - `POST /v1/customers/{id}/winback`
 - `POST /v1/customers/{id}/reply` with `{"text": "..."}`
-- `GET /v1/metrics` — win-back rate (accepted ÷ sent), naira recovered, offers sent
+- `GET /v1/metrics` — win-back rate (accepted ÷ sent), naira recovered, offers sent, plus token totals and latency summed from `model_call` log entries (`prompt_tokens`, `completion_tokens`, `reasoning_tokens`, `total_tokens`, `model_calls`, `model_latency_ms`)
 - `GET /v1/actions` and `POST /v1/actions/verify`
 - `POST /v1/voice/transcribe` — stub, validates multipart audio
 - `POST /v1/offers/{id}/promo-card` — stub, returns the image request it would send
@@ -107,11 +121,11 @@ python -m convoplex demo --live
 
 `--mock` forces the offline model even if the key is set. `CONVOPLEX_LLM=auto` (the default) uses live mode only when `META_API_KEY` is set.
 
-The live request is `POST https://api.meta.ai/v1/chat/completions` with `Authorization: Bearer $META_API_KEY` and a JSON body of `model`, `messages`, `tools`, and `max_tokens`. The model is `muse-spark-1.3`. Tool results are sent back as `{"role": "tool", "tool_call_id": "...", "content": "..."}`. Raise `META_MAX_TOKENS` if a call stops with `finish_reason=length` (the floor while tools are attached is 1000).
+The live request is `POST https://api.meta.ai/v1/chat/completions` with `Authorization: Bearer $META_API_KEY` and a JSON body of `model`, `messages`, `tools`, and `max_tokens`. The model is `muse-spark-1.3`. Tool results are sent back as `{"role": "tool", "tool_call_id": "...", "content": "..."}`. The tool-call floor is 2500. If Muse Spark still stops with `finish_reason=length`, the client retries that call once with double the budget, then records both attempts in the action log.
 
 ## Action log
 
-Each line of `data/actions.jsonl` is one message or tool event. `hash` is SHA-256 over the rest of the entry, including `prev_hash`. The first `prev_hash` is 64 zeroes. `python -m convoplex verify` recomputes the chain and exits non-zero on the first break. The writer only appends.
+Each line of `data/actions.jsonl` is one message, tool event, or model call. `hash` is SHA-256 over the rest of the entry, including `prev_hash`. The first `prev_hash` is 64 zeroes. `python -m convoplex verify` recomputes the chain and exits non-zero on the first break. The writer only appends. A `model_call` entry stores `latency_ms`, `finish_reason`, the `max_tokens` sent, the attempt number (1, or 2 after a length retry), and token usage.
 
 ## What is stubbed
 

@@ -11,7 +11,7 @@ DEFAULT_BASE_URL = "https://api.meta.ai/v1"
 DEFAULT_CHAT_MODEL = "muse-spark-1.3"
 DEFAULT_IMAGE_MODEL = "muse-image-1.0"
 DEFAULT_ASR_MODEL = "muse-voice-transcribe-1.0"
-MIN_TOOL_TOKENS = 1000
+MIN_TOOL_TOKENS = 2500
 
 LLM_MODES = ("auto", "mock", "live")
 

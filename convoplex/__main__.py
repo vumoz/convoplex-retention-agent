@@ -19,10 +19,18 @@ def main(argv: list[str] | None = None) -> int:
     generate_cmd.add_argument("--customers", type=int, default=DEFAULT_CUSTOMERS)
     generate_cmd.add_argument("--seed", type=int, default=DEFAULT_SEED)
 
-    demo_cmd = sub.add_parser("demo", help="Run one win-back and an accepting reply")
+    demo_cmd = sub.add_parser("demo", help="Run a win-back and one or more customer replies")
     demo_cmd.add_argument("--live", action="store_true", help="Call Muse Spark (requires META_API_KEY)")
     demo_cmd.add_argument("--mock", action="store_true", help="Force the deterministic mock")
     demo_cmd.add_argument("--reset", action="store_true", help="Regenerate the synthetic database first")
+    demo_cmd.add_argument("--customer", type=int, default=None, help="Customer id. Default picks a lapsed Pidgin regular.")
+    demo_cmd.add_argument("--lang", choices=("en", "pcm"), default=None, help="Override the spoken language for this run.")
+    demo_cmd.add_argument(
+        "--reply",
+        action="append",
+        default=None,
+        help="Customer reply. Repeat for decline, question, then accept. Default is one accepting reply.",
+    )
 
     verify_cmd = sub.add_parser("verify", help="Check the hash-chained action log")
     verify_cmd.add_argument("path", nargs="?", default=None)
@@ -47,8 +55,14 @@ def main(argv: list[str] | None = None) -> int:
         elif args.mock:
             settings = settings.with_llm_mode("mock")
         try:
-            result = run_demo(settings, reset_data=args.reset)
-        except (LLMError, RuntimeError) as exc:
+            result = run_demo(
+                settings,
+                reset_data=args.reset,
+                customer_id=args.customer,
+                language=args.lang,
+                replies=args.reply,
+            )
+        except (LLMError, RuntimeError, LookupError, ValueError) as exc:
             print(f"Demo failed: {exc}", file=sys.stderr)
             return 1
         print(format_demo(result))

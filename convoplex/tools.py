@@ -9,7 +9,13 @@ from convoplex.db import scenario_as_of, transaction
 
 MIN_DISCOUNT = 5
 MAX_DISCOUNT = 15
-MAX_QTY = 20
+MAX_QTY = 10
+
+_DELIVERY_FEE_NGN = {
+    "provisions": 2500,
+    "ankara": 2000,
+    "phones": 3500,
+}
 
 TOOLS = [
     {
@@ -68,7 +74,8 @@ TOOLS = [
             "name": "place_order",
             "description": (
                 "Place an order for the customer. Pass offer_id to charge the offer price "
-                "and mark the win-back accepted. Stock is decremented."
+                "and mark the win-back accepted. Quantity is capped at shelf stock and at "
+                f"{MAX_QTY} units per order. Stock is decremented by the capped quantity."
             ),
             "parameters": {
                 "type": "object",
@@ -80,6 +87,26 @@ TOOLS = [
                     "offer_id": {"type": "integer"},
                 },
                 "required": ["customer_id", "qty"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_delivery_options",
+            "description": (
+                "Synthetic delivery options for this shop. Pickup is same day at the shop with no fee. "
+                "Same-city delivery is a 1 to 2 day window, not a named weekday. "
+                "Delivery outside the shop's city is unavailable. "
+                "Never promise a date this tool did not return."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "retailer_id": {"type": "integer"},
+                    "customer_id": {"type": "integer"},
+                },
+                "required": ["retailer_id"],
             },
         },
     },
@@ -275,8 +302,9 @@ def place_order(
             offer_id = _as_int(offer_id, "offer_id")
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
-    if qty < 1 or qty > MAX_QTY:
-        return {"ok": False, "error": f"qty must be between 1 and {MAX_QTY}."}
+    if qty < 1:
+        return {"ok": False, "error": "qty must be at least 1."}
+    requested_qty = qty
     customer = _customer(conn, customer_id)
     if customer is None:
         return {"ok": False, "error": f"Unknown customer_id {customer_id}."}
@@ -296,12 +324,14 @@ def place_order(
         if error:
             return error
         stock = int(row["stock_qty"])
-        if stock < qty:
+        if stock < 1:
             return {
                 "ok": False,
                 "error": f"Only {stock} {row['unit']} of {row['name']} in stock.",
                 "stock_qty": stock,
+                "requested_qty": requested_qty,
             }
+        qty = min(requested_qty, stock, MAX_QTY)
         if offer is not None:
             unit_price = int(offer["offer_price_ngn"])
         else:
@@ -337,7 +367,10 @@ def place_order(
         "customer_id": customer_id,
         "product_id": int(row["id"]),
         "product_name": row["name"],
+        "requested_qty": requested_qty,
         "qty": qty,
+        "capped": qty != requested_qty,
+        "max_per_order": MAX_QTY,
         "unit": row["unit"],
         "unit_price_ngn": unit_price,
         "total_ngn": total,
@@ -348,12 +381,71 @@ def place_order(
     }
 
 
+def get_delivery_options(
+    conn: sqlite3.Connection,
+    retailer_id: int,
+    customer_id: int | None = None,
+    **_extra,
+) -> dict:
+    try:
+        retailer_id = _as_int(retailer_id, "retailer_id")
+        if customer_id is not None:
+            customer_id = _as_int(customer_id, "customer_id")
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    retailer = conn.execute("SELECT * FROM retailers WHERE id = ?", (retailer_id,)).fetchone()
+    if retailer is None:
+        return {"ok": False, "error": f"Unknown retailer_id {retailer_id}."}
+    customer = None
+    if customer_id is not None:
+        customer = _customer(conn, customer_id)
+        if customer is None:
+            return {"ok": False, "error": f"Unknown customer_id {customer_id}."}
+        if int(customer["retailer_id"]) != retailer_id:
+            return {"ok": False, "error": "Customer belongs to a different retailer."}
+    same_city = customer is None or customer["city"].strip().lower() == retailer["city"].strip().lower()
+    fee = _DELIVERY_FEE_NGN.get(retailer["category_focus"], 2500)
+    pickup = {
+        "method": "pickup",
+        "available": True,
+        "window": "same day",
+        "fee_ngn": 0,
+        "where": f"{retailer['name']}, {retailer['area']}",
+    }
+    if same_city:
+        delivery = {
+            "method": "delivery",
+            "available": True,
+            "window": "1 to 2 days",
+            "fee_ngn": fee,
+            "where": retailer["city"],
+            "note": "A window only. Do not name a weekday or promise a rider for a specific day.",
+        }
+    else:
+        delivery = {
+            "method": "delivery",
+            "available": False,
+            "window": None,
+            "fee_ngn": None,
+            "where": customer["city"] if customer else None,
+            "note": "No delivery outside the shop city in this synthetic catalogue.",
+        }
+    return {
+        "ok": True,
+        "synthetic": True,
+        "retailer_id": retailer_id,
+        "customer_id": customer_id,
+        "options": [pickup, delivery],
+    }
+
+
 def execute_tool(conn: sqlite3.Connection, name: str, arguments: dict) -> dict:
     functions = {
         "check_stock": check_stock,
         "get_price": get_price,
         "create_offer": create_offer,
         "place_order": place_order,
+        "get_delivery_options": get_delivery_options,
     }
     fn = functions.get(name)
     if fn is None:
@@ -368,16 +460,31 @@ def execute_tool(conn: sqlite3.Connection, name: str, arguments: dict) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
-def mark_offer_sent(conn: sqlite3.Connection, offer_id: int, message: str) -> None:
+def mark_offer_sent(
+    conn: sqlite3.Connection,
+    offer_id: int,
+    message: str,
+    language: str | None = None,
+) -> None:
     with transaction(conn):
-        conn.execute(
-            """
-            UPDATE offers
-            SET message = ?, status = 'sent'
-            WHERE id = ? AND status IN ('drafted', 'sent')
-            """,
-            (message, offer_id),
-        )
+        if language in {"en", "pcm"}:
+            conn.execute(
+                """
+                UPDATE offers
+                SET message = ?, language = ?, status = 'sent'
+                WHERE id = ? AND status IN ('drafted', 'sent')
+                """,
+                (message, language, offer_id),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE offers
+                SET message = ?, status = 'sent'
+                WHERE id = ? AND status IN ('drafted', 'sent')
+                """,
+                (message, offer_id),
+            )
 
 
 def mark_offer_declined(conn: sqlite3.Connection, offer_id: int) -> None:

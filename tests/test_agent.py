@@ -25,6 +25,7 @@ def test_pidgin_winback_and_accept_places_order(shop, log_path):
     assert "₦70,200" in win.message
     assert "Chinedu" in win.message
     assert "payday" in win.message.lower()
+    assert "don enter" not in win.message.lower()
     assert win.tool_trace == ["check_stock", "get_price", "create_offer"]
     assert win.offer["offer_price_ngn"] == 70200
     assert "INTENT" not in win.message
@@ -41,6 +42,11 @@ def test_pidgin_winback_and_accept_places_order(shop, log_path):
     assert "tool_call" in kinds
     assert "tool_result" in kinds
     assert "message" in kinds
+    assert "model_call" in kinds
+    calls = [entry for entry in log.read_all() if entry["kind"] == "model_call"]
+    assert calls[0]["payload"]["usage"]["completion_tokens"] == 0
+    assert calls[0]["payload"]["latency_ms"] == 0
+    assert calls[0]["payload"]["attempt"] == 1
     assert all(entry["prev_hash"] for entry in log.read_all())
 
 
@@ -114,3 +120,21 @@ def test_active_customer_is_not_listed_as_at_risk(shop):
     tunde = get_customer(shop, 3)
     assert tunde["segment"] == "active"
     assert tunde["frequency"] == 5
+
+
+def test_language_override_and_prompt_guardrails(shop, log_path):
+    from convoplex.prompts import build_messages
+
+    win = draft_winback(shop, ActionLog(log_path), MockMuse(), 2, max_tokens=1000, language="pcm")
+    assert win.language == "pcm"
+    assert "dey" in win.message.lower()
+    stored = shop.execute("SELECT language FROM offers WHERE customer_id = 2").fetchone()["language"]
+    assert stored == "pcm"
+    system = build_messages(shop, 1, "winback")[0]["content"]
+    assert "tank you" in system
+    assert "get_delivery_options" in system
+    assert "don enter" in system
+    assert "CONTEXT_JSON:" in system
+    context = system.split("CONTEXT_JSON:\n", 1)[1]
+    assert '"today": "2026-10-27"' in context
+    assert '"status": "open"' in context

@@ -163,7 +163,7 @@ def create_app(settings: Settings | None = None, *, generate_if_missing: bool = 
 
     @app.get("/v1/metrics")
     def metrics(conn=Depends(get_conn)):
-        return snapshot(conn)
+        return snapshot(conn, app.state.log.read_all())
 
     @app.get("/v1/actions")
     def actions(limit: int = Query(100, ge=1, le=1000)):

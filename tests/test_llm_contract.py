@@ -80,9 +80,9 @@ def test_tool_round_trip_matches_documented_shape(shop, log_path):
     assert set(body) == {"model", "messages", "max_tokens", "tools"}
     assert body["model"] == "muse-spark-1.3"
     assert body["max_tokens"] >= MIN_TOOL_TOKENS
-    assert body["max_tokens"] == 1000
+    assert body["max_tokens"] == MIN_TOOL_TOKENS
     names = [tool["function"]["name"] for tool in body["tools"]]
-    assert names == ["check_stock", "get_price", "create_offer", "place_order"]
+    assert names == ["check_stock", "get_price", "create_offer", "place_order", "get_delivery_options"]
     assert body["tools"] == TOOLS
     assert body["messages"][0]["role"] == "system"
     assert body["messages"][1]["role"] == "user"
@@ -94,15 +94,23 @@ def test_tool_round_trip_matches_documented_shape(shop, log_path):
     assert "sk-test-secret-value" not in log_path.read_text(encoding="utf-8")
 
 
-def test_length_finish_and_http_error_are_explicit():
+def test_length_finish_retries_once_then_raises():
+    sent: list[int] = []
+
     def length(request: httpx.Request) -> httpx.Response:
-        del request
+        sent.append(json.loads(request.content)["max_tokens"])
         return httpx.Response(
             200,
             json={
                 "choices": [
                     {"finish_reason": "length", "message": {"role": "assistant", "content": None}}
-                ]
+                ],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": sent[-1],
+                    "total_tokens": 10 + sent[-1],
+                    "completion_tokens_details": {"reasoning_tokens": sent[-1]},
+                },
             },
         )
 
@@ -117,8 +125,52 @@ def test_length_finish_and_http_error_are_explicit():
     except LLMError as exc:
         assert "max_tokens" in str(exc)
         assert "sk-test-secret-value" not in str(exc)
+        assert sent == [MIN_TOOL_TOKENS, MIN_TOOL_TOKENS * 2]
+        assert [call.max_tokens for call in exc.calls] == sent
+        assert exc.calls[1].usage["reasoning_tokens"] == MIN_TOOL_TOKENS * 2
     else:
         raise AssertionError("expected LLMError")
+
+
+def test_length_retry_keeps_the_second_completion():
+    sent: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content)["max_tokens"])
+        if len(sent) == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {"finish_reason": "length", "message": {"role": "assistant", "content": None}}
+                    ]
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "Abeg no wahala."},
+                    }
+                ],
+                "usage": {"prompt_tokens": 4, "completion_tokens": 8, "total_tokens": 12},
+            },
+        )
+
+    llm = LiveMuse(
+        api_key="sk-test-secret-value",
+        base_url="https://api.meta.ai/v1",
+        model="muse-spark-1.3",
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    done = llm.complete([{"role": "user", "content": "hi"}], tools=TOOLS, max_tokens=5)
+    assert done.content == "Abeg no wahala."
+    assert sent == [MIN_TOOL_TOKENS, MIN_TOOL_TOKENS * 2]
+    assert len(done.calls) == 2
+    assert done.calls[1].usage["total_tokens"] == 12
+    assert done.calls[1].latency_ms >= 0
 
     def denied(request: httpx.Request) -> httpx.Response:
         del request
@@ -140,8 +192,10 @@ def test_length_finish_and_http_error_are_explicit():
 
 
 def test_max_tokens_floor():
-    assert effective_max_tokens(300, TOOLS) == 1000
-    assert effective_max_tokens(1500, TOOLS) == 1500
+    assert MIN_TOOL_TOKENS == 2500
+    assert effective_max_tokens(300, TOOLS) == 2500
+    assert effective_max_tokens(1500, TOOLS) == 2500
+    assert effective_max_tokens(3000, TOOLS) == 3000
     assert effective_max_tokens(300, None) == 300
 
 
