@@ -10,7 +10,14 @@ from dataclasses import dataclass, field
 from convoplex.actionlog import ActionLog
 from convoplex.context import agent_context
 from convoplex.llm import Completion, LLMError, ToolCall, classify_reply, split_intent
-from convoplex.messages import accept_message, decline_message, delivery_sentence, question_message, winback_message
+from convoplex.messages import (
+    accept_message,
+    decline_message,
+    delivery_fee_ngn,
+    one_seasonal_hook,
+    question_message,
+    winback_message,
+)
 from convoplex.money import naira
 from convoplex.prompts import build_messages
 from convoplex.tools import TOOLS, execute_tool, mark_offer_declined, mark_offer_sent
@@ -209,13 +216,17 @@ def _run(
 
     if task == "winback" and offer and offer.get("ok") and "₦" not in text:
         text = winback_message(profile, offer)
+    if task == "winback":
+        text = one_seasonal_hook(text)
     if task == "reply" and intent == "question" and profile.get("open_offer"):
         offer_price = int(profile["open_offer"]["offer_price_ngn"])
         if naira(offer_price) not in text:
             held = profile["open_offer"]
             text = question_message(profile, held["product_name"], offer_price, held.get("stock_qty"))
     if task == "reply" and intent == "accept" and order and order.get("ok"):
-        if naira(int(order["total_ngn"])) not in text or not _states_arrival(text):
+        fee = delivery_fee_ngn(delivery)
+        fee_stated = fee is None or naira(fee) in text
+        if naira(int(order["total_ngn"])) not in text or not _states_arrival(text) or not fee_stated:
             text = accept_message(profile, order, delivery)
 
     if task == "winback" and offer and offer.get("ok"):

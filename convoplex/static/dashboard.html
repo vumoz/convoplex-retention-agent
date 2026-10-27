@@ -130,7 +130,15 @@
       margin: 0;
     }
     .filters { display: flex; gap: 6px; margin-top: 10px; }
-    .filters button, .quiet, .upload {
+    .find { display: block; margin-top: 10px; }
+    .find input {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 8px 12px;
+      background: #fff;
+    }
+    .filters button, .quiet {
       border: 1px solid var(--line);
       background: #fff;
       border-radius: 999px;
@@ -168,6 +176,20 @@
     .badge.lapsed { background: #f8e1d8; color: var(--clay); }
     .badge.at_risk { background: #f6e7c8; color: var(--gold-deep); }
     .conversation { display: flex; flex-direction: column; min-height: 420px; }
+    .person { flex: 0 0 auto; order: 1; }
+    .thread { order: 2; flex: 1 1 auto; }
+    .promo { order: 3; flex: 0 0 auto; }
+    .composer { order: 4; flex: 0 0 auto; position: static; }
+    .sr {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      border: 0;
+    }
     .person .row { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
     .reasons { margin: 8px 0 0; padding-left: 18px; color: var(--ink); font-size: 13px; }
     .reasons li { margin: 2px 0; }
@@ -189,8 +211,10 @@
       flex-direction: column;
       gap: 8px;
       min-height: 260px;
-      max-height: 380px;
+      max-height: 420px;
       overflow: auto;
+      position: relative;
+      z-index: 1;
     }
     .bubble {
       max-width: min(82%, 460px);
@@ -209,9 +233,12 @@
       grid-template-columns: 1fr 180px;
       gap: 12px;
       padding: 12px 14px;
-      border-bottom: 1px solid var(--line);
+      border-top: 1px solid var(--line);
       align-items: center;
       background: #fff;
+      position: relative;
+      overflow: hidden;
+      z-index: 0;
     }
     .promo h3 { margin: 0; font-size: 16px; }
     .promo-price { margin: 4px 0; font-weight: 700; }
@@ -230,6 +257,8 @@
       padding: 12px;
       border-top: 1px solid var(--line);
       align-items: flex-end;
+      position: static;
+      background: var(--card);
     }
     textarea {
       flex: 1;
@@ -240,8 +269,47 @@
       padding: 10px 12px;
       background: #fff;
     }
-    .upload { display: inline-flex; align-items: center; }
-    .upload input { width: 150px; font-size: 12px; }
+    .upload {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 40px;
+      padding: 8px 16px;
+      border-radius: 999px;
+      border: 1px solid var(--palm);
+      background: var(--palm-soft);
+      color: var(--palm-deep);
+      font-weight: 700;
+      font-size: 14px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .upload input {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      border: 0;
+    }
+    .promo-error { color: #7c2c16; font-size: 13px; margin: 6px 0 0; }
+    .pin { background: #f4fbf7; }
+    .demo-tag {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 1px 6px;
+      border-radius: 999px;
+      background: var(--gold);
+      color: #1c1712;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      vertical-align: 1px;
+    }
     .log { margin-top: 14px; }
     .log-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
     .log-head h2 { margin-right: auto; }
@@ -271,10 +339,20 @@
     }
     @media (max-width: 640px) {
       .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .composer, .person .row { display: grid; grid-template-columns: 1fr; }
-      .composer { flex-direction: column; align-items: stretch; position: sticky; bottom: 0; background: var(--card); }
-      .promo { grid-template-columns: 1fr 120px; }
+      .person .row { display: grid; grid-template-columns: 1fr; }
+      .conversation { display: flex; flex-direction: column; }
+      .person { order: 1; flex: 0 0 auto; }
+      .thread { order: 2; max-height: none; min-height: 220px; }
+      .promo { order: 3; grid-template-columns: 1fr 120px; }
       .promo img { width: 120px; height: 120px; }
+      .composer {
+        order: 4;
+        position: static;
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+      }
+      .upload { width: 100%; }
       .bubble { max-width: 92%; }
     }
   </style>
@@ -309,6 +387,10 @@
             <button type="button" data-action="filter" data-filter="at_risk">At risk</button>
             <button type="button" data-action="filter" data-filter="lapsed">Lapsed</button>
           </div>
+          <label class="find">
+            <span class="sr">Search customers by name or id</span>
+            <input id="find" type="search" placeholder="Search name or id" autocomplete="off" />
+          </label>
         </div>
         <div class="shops" id="shops">
           <p class="empty" id="loading">Loading the shops…</p>
@@ -323,16 +405,17 @@
             </div>
           </div>
         </div>
-        <div class="promo" id="promo" hidden></div>
         <div class="thread" id="thread" aria-live="polite">
           <p class="empty">The conversation shows up here, in a WhatsApp-style thread.</p>
         </div>
+        <div class="promo" id="promo" hidden></div>
         <form class="composer" id="composer">
-          <label class="sr" for="reply" style="position:absolute;left:-999px">Customer reply</label>
+          <label class="sr" for="reply">Customer reply</label>
           <textarea id="reply" rows="2" maxlength="2000" placeholder="Reply as the customer. Decline, ask the price, or accept." disabled></textarea>
           <button type="submit" id="send" disabled>Send reply</button>
-          <label class="upload">Voice note
+          <label class="upload" for="voice">
             <input id="voice" type="file" accept=".ogg,.wav,audio/ogg,audio/wav,audio/opus" disabled />
+            <span id="voice-label">Voice note</span>
           </label>
         </form>
       </section>
@@ -355,9 +438,14 @@
       metrics: null,
       actions: {entries: [], count: 0},
       filter: "all",
+      query: "",
       busy: false,
+      promoBusy: false,
+      promoNote: "",
+      promoError: false,
       cardVersion: null,
     };
+    const DEMO_CUSTOMER_ID = 184;
 
     function el(tag, className, text) {
       const node = document.createElement(tag);
@@ -381,8 +469,12 @@
     }
 
     function clock(ts) {
-      const match = String(ts || "").match(/T(\d{2}:\d{2})/);
-      return match ? match[1] : "";
+      const date = new Date(ts);
+      if (Number.isNaN(date.getTime())) return "";
+      const lagos = new Date(date.getTime() + 60 * 60 * 1000);
+      const hh = String(lagos.getUTCHours()).padStart(2, "0");
+      const mm = String(lagos.getUTCMinutes()).padStart(2, "0");
+      return `${hh}:${mm} WAT`;
     }
 
     function segmentLabel(segment) {
@@ -448,19 +540,41 @@
       }
     }
 
+    function matchesQuery(customer, query) {
+      if (!query) return true;
+      const id = String(customer.id);
+      if (id === query || (query.length >= 2 && id.includes(query))) return true;
+      return customer.full_name.toLowerCase().includes(query);
+    }
+
     function renderShops() {
       const host = document.getElementById("shops");
       const scroll = host.scrollTop;
-      const customers = state.customers.filter((row) => state.filter === "all" || row.segment === state.filter);
+      const query = state.query.trim().toLowerCase();
+      const demo = state.customers.find((row) => row.id === DEMO_CUSTOMER_ID) || null;
+      const segmentRows = state.customers.filter((row) => state.filter === "all" || row.segment === state.filter);
+      const customers = segmentRows.filter((row) => matchesQuery(row, query));
+      const pin = demo && matchesQuery(demo, query) ? demo : null;
       const groups = new Map(state.retailers.map((shop) => [shop.id, []]));
       for (const customer of customers) {
+        if (pin && customer.id === pin.id) continue;
         if (!groups.has(customer.retailer_id)) groups.set(customer.retailer_id, []);
         groups.get(customer.retailer_id).push(customer);
       }
       host.replaceChildren();
       const label = state.filter === "all" ? "at risk or lapsed" : segmentLabel(state.filter).toLowerCase();
-      document.getElementById("list-count").textContent = `${customers.length} ${label}, by shop.`;
-      let shown = 0;
+      const count = document.getElementById("list-count");
+      count.textContent = query
+        ? `${customers.length + (pin && !customers.some((row) => row.id === pin.id) ? 1 : 0)} matches.`
+        : `${customers.length} ${label}, by shop.`;
+      if (pin) {
+        const section = el("section", "shop pin");
+        section.append(el("h3", null, "Demo customer"));
+        section.append(el("p", "shop-meta", `${pin.retailer_name} · pinned for the live demo`));
+        section.append(customerButton(pin));
+        host.append(section);
+      }
+      let shown = pin ? 1 : 0;
       for (const retailer of state.retailers) {
         const rows = groups.get(retailer.id) || [];
         if (!rows.length) continue;
@@ -471,7 +585,7 @@
         for (const customer of rows) section.append(customerButton(customer));
         host.append(section);
       }
-      if (!shown) host.append(el("p", "empty", "Nobody in this view."));
+      if (!shown) host.append(el("p", "empty", query ? "Nobody matches that search." : "Nobody in this view."));
       host.scrollTop = scroll;
     }
 
@@ -481,8 +595,9 @@
       button.className = "person-btn" + (state.selected && state.selected.id === customer.id ? " selected" : "");
       button.dataset.id = String(customer.id);
       const name = el("span", "name", customer.full_name);
+      if (customer.id === DEMO_CUSTOMER_ID) name.append(el("span", "demo-tag", "Demo"));
       const badge = el("span", "badge " + customer.segment, segmentLabel(customer.segment));
-      const meta = el("span", "sub", `${customer.area} · score ${customer.score} · ${customer.recency_days} days quiet`);
+      const meta = el("span", "sub", `#${customer.id} · ${customer.area} · score ${customer.score} · ${customer.recency_days} days quiet`);
       const reason = el("span", "reason", (customer.reasons && customer.reasons[0]) || "");
       button.append(name, badge, meta, reason);
       return button;
@@ -547,16 +662,7 @@
         bubble.append(el("span", "stamp", `${who}${intent} · ${clock(message.ts)}`));
         host.append(bubble);
       }
-      host.scrollTop = host.scrollHeight;
-    }
-
-    async function probeImage(url) {
-      try {
-        const response = await fetch(url, {method: "HEAD"});
-        return response.ok;
-      } catch {
-        return false;
-      }
+      host.scrollTop = 0;
     }
 
     function renderPromo() {
@@ -575,21 +681,37 @@
       const button = document.createElement("button");
       button.type = "button";
       button.className = "primary";
-      button.dataset.action = "promo";
-      button.textContent = state.busy ? "Working…" : "Generate promo card";
-      button.disabled = state.busy;
+      button.id = "promo-go";
+      button.textContent = state.promoBusy ? "Generating…" : "Generate promo card";
+      button.disabled = state.promoBusy;
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        sendPromo();
+      });
       copy.append(button);
+      const note = el("p", state.promoError ? "promo-error" : "fine", state.promoNote || "");
+      note.id = "promo-note";
+      note.hidden = !state.promoNote;
+      copy.append(note);
       const frame = el("div", "promo-frame");
-      host.append(copy, frame);
-      const src = offer.promo_url + (state.cardVersion ? `?t=${state.cardVersion}` : `?t=${Date.now()}`);
-      probeImage(offer.promo_url).then((ok) => {
-        if (!ok) return;
-        if (!state.thread || !state.thread.offer || state.thread.offer.offer_id !== offer.offer_id) return;
+      if (state.cardVersion) {
         const img = document.createElement("img");
         img.alt = `Promo card for ${offer.product_name}, ${naira(offer.offer_price_ngn)}`;
-        img.src = src;
-        frame.replaceChildren(img);
-      });
+        img.src = `${offer.promo_url}?t=${state.cardVersion}`;
+        frame.append(img);
+      }
+      host.append(copy, frame);
+    }
+
+    function setPromoNote(text, isError) {
+      state.promoNote = text || "";
+      state.promoError = Boolean(isError);
+      const node = document.getElementById("promo-note");
+      if (!node) return;
+      node.className = state.promoError ? "promo-error" : "fine";
+      node.textContent = state.promoNote;
+      node.hidden = !state.promoNote;
     }
 
     function summarise(entry) {
@@ -650,6 +772,8 @@
     async function selectCustomer(id) {
       setError("");
       state.cardVersion = null;
+      state.promoNote = "";
+      state.promoError = false;
       state.thread = await api(`/v1/customers/${id}/thread`);
       state.selected = state.thread.customer;
       setBusy(false);
@@ -719,26 +843,46 @@
       } finally {
         setBusy(false);
         document.getElementById("voice").value = "";
+        const label = document.getElementById("voice-label");
+        if (label) label.textContent = "Voice note";
         renderPerson();
       }
     }
 
     async function sendPromo() {
       const offer = state.thread && state.thread.offer;
-      if (!offer || state.busy) return;
-      setBusy(true);
+      if (!offer || state.promoBusy) return;
+      const offerId = offer.offer_id;
+      state.promoBusy = true;
+      state.promoError = false;
       setError("");
       renderPromo();
+      const started = Date.now();
+      setPromoNote("Generating the card… 0s. Live images usually take 10–20 seconds.");
+      const timer = setInterval(() => {
+        const seconds = Math.floor((Date.now() - started) / 1000);
+        setPromoNote(`Generating the card… ${seconds}s. Live images usually take 10–20 seconds.`);
+      }, 1000);
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 90000);
       try {
-        await api(`/v1/offers/${offer.offer_id}/promo-card`, {method: "POST"});
-        state.cardVersion = Date.now();
+        await api(`/v1/offers/${offerId}/promo-card`, {method: "POST", signal: controller.signal});
+        const current = state.thread && state.thread.offer;
+        if (current && current.offer_id === offerId) state.cardVersion = Date.now();
+        state.promoNote = "";
+        state.promoError = false;
         await refreshSide();
-        renderPromo();
       } catch (err) {
-        setError(err.message);
+        const message = err && err.name === "AbortError"
+          ? "Promo card timed out after 90 seconds. Try again."
+          : (err && err.message) || "Promo card failed.";
+        state.promoError = true;
+        state.promoNote = message;
+        setError(message);
       } finally {
-        setBusy(false);
-        renderPerson();
+        clearInterval(timer);
+        clearTimeout(timeout);
+        state.promoBusy = false;
         renderPromo();
       }
     }
@@ -793,6 +937,14 @@
       document.getElementById("asof").textContent = health.scenario_as_of || "27 Oct 2026";
       state.retailers = retailers.retailers || [];
       state.customers = listed.customers || [];
+      if (!state.customers.some((row) => row.id === DEMO_CUSTOMER_ID)) {
+        try {
+          const demo = await api(`/v1/customers/${DEMO_CUSTOMER_ID}`);
+          state.customers = [demo, ...state.customers];
+        } catch {
+          // The small test shop has no customer 184. The full demo database does.
+        }
+      }
       state.metrics = metrics;
       state.actions = actions;
       if (state.selected) {
@@ -826,8 +978,6 @@
         renderShops();
       } else if (action === "winback") {
         sendWinback();
-      } else if (action === "promo") {
-        sendPromo();
       } else if (action === "verify") {
         verifyChain().catch((err) => setError(err.message));
       } else if (action === "reset") {
@@ -844,7 +994,18 @@
 
     document.getElementById("voice").addEventListener("change", () => {
       const file = document.getElementById("voice").files[0];
-      if (file) sendVoice(file);
+      const label = document.getElementById("voice-label");
+      if (!file) {
+        label.textContent = "Voice note";
+        return;
+      }
+      label.textContent = file.name;
+      sendVoice(file);
+    });
+
+    document.getElementById("find").addEventListener("input", (event) => {
+      state.query = event.target.value;
+      renderShops();
     });
 
     boot().catch((err) => setError(err.message));

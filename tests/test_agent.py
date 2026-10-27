@@ -37,6 +37,8 @@ def test_pidgin_winback_and_accept_places_order(shop, log_path):
     assert "₦70,200" in reply.message
     assert "pickup" in reply.message.lower()
     assert "delivery" in reply.message.lower()
+    assert "₦2,500" in reply.message
+    assert "delivery fee na" in reply.message.lower()
     assert "how you dey" not in reply.message.lower()
     stock = shop.execute("SELECT stock_qty FROM products WHERE id = 1").fetchone()["stock_qty"]
     assert stock == 19
@@ -166,6 +168,8 @@ def test_decline_then_question_then_accept_keeps_the_offer(shop, log_path):
     assert "₦78,000" not in accept.message
     assert "pickup" in accept.message.lower()
     assert "delivery" in accept.message.lower()
+    assert "₦2,500" in accept.message
+    assert "delivery fee na" in accept.message.lower()
     assert "how you dey" not in accept.message.lower()
     assert "check_stock" not in accept.tool_trace
     assert "get_price" not in accept.tool_trace
@@ -191,6 +195,8 @@ def test_language_override_and_prompt_guardrails(shop, log_path):
     assert "tank you" in system
     assert "get_delivery_options" in system
     assert "Month-end dey this week, e good time to stock up." in system
+    assert "exactly one seasonal hook" in system
+    assert "delivery fee" in system
     assert "payday window open" not in system
     assert "CONTEXT_JSON:" in system
     context = system.split("CONTEXT_JSON:\n", 1)[1]

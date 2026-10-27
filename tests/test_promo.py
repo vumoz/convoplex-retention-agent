@@ -41,6 +41,17 @@ def test_overlay_uses_the_offer_numbers_and_the_prompt_forbids_text():
     assert "no digits" in prompt
 
 
+def test_card_panel_stays_below_the_product_and_names_the_cta():
+    copy = overlay_copy(OFFER)
+    assert copy["cta"] == "Reply YES on WhatsApp"
+    image = Image.open(io.BytesIO(render_promo_card(OFFER, None))).convert("RGB")
+    # The old panel started near y=628 and left a tall empty band over the product.
+    above = image.getpixel((60, 700))
+    panel = image.getpixel((60, 1000))
+    assert sum(panel) < 160
+    assert sum(above) > sum(panel) + 80
+
+
 def test_mock_card_is_a_square_webp_and_changes_when_the_price_changes():
     first = render_promo_card(OFFER, None)
     second = render_promo_card({**OFFER, "offer_price_ngn": 50000, "discount_percent": 15}, None)

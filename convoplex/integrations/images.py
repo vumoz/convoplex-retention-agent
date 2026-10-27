@@ -144,6 +144,7 @@ def overlay_copy(offer: dict) -> dict:
         "price": naira(offer["offer_price_ngn"]),
         "was": naira(offer["list_price_ngn"]),
         "off": f"{int(offer['discount_percent'])}% OFF",
+        "cta": "Reply YES on WhatsApp",
     }
 
 
@@ -196,14 +197,16 @@ def _cover(image: Image.Image) -> Image.Image:
 
 
 def _scrim(base: Image.Image) -> Image.Image:
+    """Shade the shop name and the bottom copy. Leave the product in the middle clear."""
     shade = Image.new("RGBA", base.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(shade)
-    for y in range(0, 320, 4):
-        alpha = int(150 * (1 - y / 320))
+    for y in range(0, 280, 4):
+        alpha = int(140 * (1 - y / 280))
         draw.rectangle((0, y, CARD, y + 4), fill=(8, 28, 22, alpha))
-    for y in range(520, CARD, 4):
-        alpha = int(30 + 170 * ((y - 520) / (CARD - 520)))
-        draw.rectangle((0, y, CARD, y + 4), fill=(8, 24, 18, min(alpha, 210)))
+    # The copy panel sits in the bottom ~280px. Start the scrim just above it.
+    for y in range(760, CARD, 4):
+        alpha = int(40 + 160 * ((y - 760) / (CARD - 760)))
+        draw.rectangle((0, y, CARD, y + 4), fill=(8, 24, 18, min(alpha, 190)))
     return Image.alpha_composite(base, shade)
 
 
@@ -254,9 +257,10 @@ def render_promo_card(offer: dict, background: bytes | None = None) -> bytes:
     shop_font = _font(54, bold=True)
     city_font = _font(28, bold=False)
     product_font = _font(40, bold=True)
-    price_font = _font(76, bold=True)
-    was_font = _font(32, bold=False)
-    badge_font = _font(28, bold=True)
+    price_font = _font(68, bold=True)
+    was_font = _font(30, bold=False)
+    badge_font = _font(26, bold=True)
+    cta_font = _font(30, bold=True)
     ink = (255, 248, 238, 255)
     gold = (242, 193, 78, 255)
     muted = (226, 210, 186, 255)
@@ -271,34 +275,63 @@ def render_promo_card(offer: dict, background: bytes | None = None) -> bytes:
     y += 36
     draw.rectangle((72, y, 196, y + 4), fill=gold)
 
-    draw.rounded_rectangle((48, 628, CARD - 48, CARD - 48), radius=32, fill=(10, 36, 28, 228))
-    y = 668
-    for line in _fit(_wrap(draw, copy["product"], product_font, CARD - 180), 3):
-        draw.text((80, y), line, font=product_font, fill=ink)
-        y += 50
-    y += 18
-    draw.text((80, y), copy["price"], font=price_font, fill=gold)
-    price_width = draw.textlength(copy["price"], font=price_font)
+    product_lines = _fit(_wrap(draw, copy["product"], product_font, CARD - 200), 2)
+    price = copy["price"]
     badge = copy["off"]
+    was = f"was {copy['was']}"
+    cta = copy["cta"]
+    price_width = draw.textlength(price, font=price_font)
     badge_width = draw.textlength(badge, font=badge_font)
-    badge_x = 80 + price_width + 28
-    badge_y = y + 22
-    if badge_x + badge_width + 36 > CARD - 80:
-        badge_x = CARD - 80 - badge_width - 36
-        badge_y = y + 86
+    badge_beside = 80 + price_width + 28 + badge_width + 36 <= CARD - 80
+    line_h = 48
+    pad_top = 20
+    pad_bottom = 20
+    price_h = 74
+    was_h = 36
+    cta_h = 38
+    extra_badge = 0 if badge_beside else 54
+    panel_height = (
+        pad_top
+        + max(1, len(product_lines)) * line_h
+        + 6
+        + price_h
+        + extra_badge
+        + 2
+        + was_h
+        + 10
+        + cta_h
+        + pad_bottom
+    )
+    panel_bottom = CARD - 28
+    panel_top = panel_bottom - panel_height
+    draw.rounded_rectangle((48, panel_top, CARD - 48, panel_bottom), radius=28, fill=(10, 36, 28, 235))
+
+    y = panel_top + pad_top
+    for line in product_lines:
+        draw.text((80, y), line, font=product_font, fill=ink)
+        y += line_h
+    y += 6
+    draw.text((80, y), price, font=price_font, fill=gold)
+    if badge_beside:
+        badge_x = 80 + price_width + 28
+        badge_y = y + 16
+    else:
+        badge_x = 80
+        badge_y = y + price_h
     draw.rounded_rectangle(
-        (badge_x, badge_y, badge_x + badge_width + 36, badge_y + 48),
-        radius=24,
+        (badge_x, badge_y, badge_x + badge_width + 36, badge_y + 44),
+        radius=22,
         fill=(226, 176, 67, 255),
     )
-    draw.text((badge_x + 18, badge_y + 8), badge, font=badge_font, fill=(28, 20, 8, 255))
-    y += 96
-    was = f"was {copy['was']}"
+    draw.text((badge_x + 18, badge_y + 7), badge, font=badge_font, fill=(28, 20, 8, 255))
+    y += price_h + extra_badge + 2
     draw.text((80, y), was, font=was_font, fill=muted)
     was_width = draw.textlength(was, font=was_font)
     box = draw.textbbox((80, y), was, font=was_font)
     mid = (box[1] + box[3]) / 2
     draw.line((80, mid, 80 + was_width, mid), fill=muted, width=3)
+    y += was_h + 10
+    draw.text((80, y), cta, font=cta_font, fill=gold)
 
     buffer = io.BytesIO()
     canvas.convert("RGB").save(buffer, format="WEBP", quality=82, method=4)

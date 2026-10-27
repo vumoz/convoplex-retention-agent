@@ -17,6 +17,18 @@ def test_dashboard_page_and_thread(shop, tmp_path):
     assert "At risk" in html
     assert "Lapsed" in html
     assert "WhatsApp" in html
+    assert 'id="find"' in html
+    assert "Search name or id" in html
+    assert "Demo customer" in html
+    assert "DEMO_CUSTOMER_ID = 184" in html
+    assert "WAT" in html
+    assert "60 * 60 * 1000" in html
+    assert "Generating the card" in html
+    assert "/promo-card" in html
+    assert 'method: "POST"' in html
+    assert 'method: "HEAD"' not in html
+    assert 'id="voice-label"' in html
+    assert "clip: rect(0, 0, 0, 0)" in html
 
     missing = client.get("/v1/customers/99/thread")
     assert missing.status_code == 404
