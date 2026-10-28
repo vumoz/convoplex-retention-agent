@@ -149,7 +149,7 @@ def test_live_style_drafts_keep_one_hook_and_the_fee(shop, log_path):
         def __init__(self):
             self.inner = MockMuse()
 
-        def complete(self, messages, *, tools, max_tokens):
+        def complete(self, messages, *, tools, max_tokens, reasoning_effort=None, retry_on_length=True):
             completion = self.inner.complete(messages, tools=tools, max_tokens=max_tokens)
             if completion.content and not completion.tool_calls:
                 completion.content = (
@@ -174,7 +174,7 @@ def test_live_style_drafts_keep_one_hook_and_the_fee(shop, log_path):
         def __init__(self):
             self.inner = MockMuse()
 
-        def complete(self, messages, *, tools, max_tokens):
+        def complete(self, messages, *, tools, max_tokens, reasoning_effort=None, retry_on_length=True):
             completion = self.inner.complete(messages, tools=tools, max_tokens=max_tokens)
             if completion.content and "INTENT: accept" in completion.content:
                 completion.content = (

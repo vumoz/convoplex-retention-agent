@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from datetime import datetime, timezone
 
 import httpx
@@ -255,6 +256,7 @@ def remember_send(
     note: str,
     caption: str | None,
     body: str | None = None,
+    e2e_ms: int | None = None,
 ) -> None:
     store.set_status(wamid_hash, "sent")
     payload: dict = {
@@ -273,6 +275,8 @@ def remember_send(
         payload["message_seq"] = message_seq
     if caption:
         payload["caption"] = caption
+    if e2e_ms is not None:
+        payload["e2e_ms"] = int(e2e_ms)
     safe_append(log, settings, kind="whatsapp_send", actor="whatsapp", payload=payload)
 
 
@@ -292,6 +296,8 @@ def deliver(
     now: datetime | None = None,
     session_open: bool = False,
     language: str | None = None,
+    started: float | None = None,
+    turn: dict | None = None,
 ) -> dict:
     """Send free-form text or an image when the window is open, otherwise the template.
 
@@ -301,6 +307,10 @@ def deliver(
     """
     moment = now or now_utc()
     client = WhatsAppClient(settings, channel=channel, http=http)
+
+    def _stamp() -> int | None:
+        # Measured after the Graph call returns, so the figure is inbound to send.
+        return _e2e_ms(started)
     demo = settings.whatsapp_demo_to or ""
     open_now = session_open or window_open(store.load().get("last_inbound_at"), moment)
     if kind == "text":
@@ -321,7 +331,9 @@ def deliver(
             note="",
             caption=caption,
             body=caption or "",
+            e2e_ms=_stamp(),
         )
+        _mark_delivered(turn)
         return _delivery_body(
             customer_id, "image", result.wamid_hash, result.wamid_tail, settings, "open", ""
         )
@@ -339,7 +351,9 @@ def deliver(
             note="",
             caption=None,
             body=text,
+            e2e_ms=_stamp(),
         )
+        _mark_delivered(turn)
         return _delivery_body(
             customer_id, "text", result.wamid_hash, result.wamid_tail, settings, "open", ""
         )
@@ -357,7 +371,9 @@ def deliver(
         note=note,
         caption=None,
         body="WhatsApp template hello_world (en_US).",
+        e2e_ms=_stamp(),
     )
+    _mark_delivered(turn)
     return _delivery_body(
         customer_id, "template", result.wamid_hash, result.wamid_tail, settings, "closed", note
     )
@@ -554,6 +570,40 @@ def _log_failure(settings: Settings, log: ActionLog, message: InboundMessage, ex
         return
 
 
+def _e2e_ms(started: float | None) -> int | None:
+    if started is None:
+        return None
+    return max(0, int((time.perf_counter() - started) * 1000))
+
+
+def _mark_delivered(turn: dict | None) -> None:
+    if turn is not None:
+        turn["delivered"] = True
+
+
+def _show_typing(settings: Settings, channel: str, log: ActionLog, http, message: InboundMessage) -> None:
+    """Mark the inbound message read and show WhatsApp's typing indicator."""
+    if channel != "whatsapp" or not message.message_id:
+        return
+    try:
+        WhatsAppClient(settings, channel=channel, http=http).mark_read(message.message_id)
+    except (SendBlocked, WhatsAppError) as exc:
+        _log_failure(settings, log, message, exc)
+
+
+def _log_unsent(settings: Settings, log: ActionLog, message: InboundMessage, turn: dict, started: float) -> None:
+    payload = {
+        "customer_id": turn.get("customer_id"),
+        "e2e_ms": _e2e_ms(started),
+        "outcome": "unsent",
+        **public_wamid(message.message_id),
+    }
+    try:
+        safe_append(log, settings, kind="whatsapp_turn", actor="whatsapp", payload=payload)
+    except Exception:
+        return
+
+
 def _process_one(
     settings: Settings,
     channel: str,
@@ -566,102 +616,123 @@ def _process_one(
     asr_http: httpx.Client | None,
     max_tokens: int,
 ) -> None:
-    conn = open_db(settings)
+    started = time.perf_counter()
+    turn = {"delivered": False, "customer_id": None}
     try:
-        customer_id = resolve_demo_customer(store, conn)
-        if customer_id is None:
+        if channel == "whatsapp":
+            _show_typing(settings, channel, log, http, message)
+        conn = open_db(settings)
+        try:
+            customer_id = resolve_demo_customer(store, conn)
+            turn["customer_id"] = customer_id
+            if customer_id is None:
+                safe_append(
+                    log,
+                    settings,
+                    kind="whatsapp_error",
+                    actor="whatsapp",
+                    payload={
+                        **public_wamid(message.message_id),
+                        "error": "No demo customer is selected. Choose one in the dashboard or CLI.",
+                    },
+                )
+                return
             safe_append(
                 log,
                 settings,
-                kind="whatsapp_error",
+                kind="whatsapp_inbound",
                 actor="whatsapp",
                 payload={
+                    "customer_id": customer_id,
                     **public_wamid(message.message_id),
-                    "error": "No demo customer is selected. Choose one in the dashboard or CLI.",
+                    "kind": message.kind,
+                    "from_masked": mask_phone(message.from_phone),
                 },
             )
-            return
-        safe_append(
-            log,
-            settings,
-            kind="whatsapp_inbound",
-            actor="whatsapp",
-            payload={
-                "customer_id": customer_id,
-                **public_wamid(message.message_id),
-                "kind": message.kind,
-                "from_masked": mask_phone(message.from_phone),
-            },
-        )
-        if message.kind in {"text", "interactive"}:
-            text = (message.text or "").strip()
-            if not text:
+            if message.kind in {"text", "interactive"}:
+                text = (message.text or "").strip()
+                if not text:
+                    return
+                if _language_turn(
+                    settings, channel, log, store, conn, http, customer_id, text, started=started, turn=turn
+                ):
+                    return
+                result = handle_reply(conn, log, llm, customer_id, text, max_tokens=max_tokens)
+            elif message.kind == "audio":
+                try:
+                    text, result = _audio_reply(
+                        settings,
+                        conn,
+                        log,
+                        llm,
+                        message,
+                        customer_id,
+                        http=http,
+                        asr_http=asr_http,
+                        max_tokens=max_tokens,
+                    )
+                except Exception as exc:
+                    _log_failure(settings, log, message, exc)
+                    _send_voice_fallback(
+                        settings, channel, log, store, conn, http, customer_id, started=started, turn=turn
+                    )
+                    return
+                if interpret_language(text):
+                    _language_turn(
+                        settings, channel, log, store, conn, http, customer_id, text, started=started, turn=turn
+                    )
+                    return
+                if result is None:
+                    _log_failure(settings, log, message, WhatsAppError("The voice note had no words."))
+                    _send_voice_fallback(
+                        settings, channel, log, store, conn, http, customer_id, started=started, turn=turn
+                    )
+                    return
+            else:
                 return
-            if _language_turn(settings, channel, log, store, conn, http, customer_id, text):
-                return
-            result = handle_reply(conn, log, llm, customer_id, text, max_tokens=max_tokens)
-        elif message.kind == "audio":
-            try:
-                text, result = _audio_reply(
-                    settings,
-                    conn,
-                    log,
-                    llm,
-                    message,
-                    customer_id,
-                    http=http,
-                    asr_http=asr_http,
-                    max_tokens=max_tokens,
-                )
-            except Exception as exc:
-                _log_failure(settings, log, message, exc)
-                _send_voice_fallback(settings, channel, log, store, conn, http, customer_id)
-                return
-            if interpret_language(text):
-                _language_turn(settings, channel, log, store, conn, http, customer_id, text)
-                return
-            if result is None:
-                _log_failure(settings, log, message, WhatsAppError("The voice note had no words."))
-                _send_voice_fallback(settings, channel, log, store, conn, http, customer_id)
-                return
-        else:
-            return
-    finally:
-        conn.close()
-    if channel != "whatsapp":
-        return
-    seq = _latest_agent_seq(log, customer_id)
-    hint = None
-    try:
-        hint_conn = open_db(settings)
-        try:
-            hint = take_language_hint(hint_conn, customer_id)
         finally:
-            hint_conn.close()
-    except Exception:
+            conn.close()
+        if channel != "whatsapp":
+            return
+        seq = _latest_agent_seq(log, customer_id)
         hint = None
-    outbound = result.message
-    if hint:
-        outbound = f"{outbound.rstrip()}\n\n{hint}"
-    try:
-        deliver(
-            settings,
-            channel,
-            log,
-            store,
-            http,
-            customer_id=customer_id,
-            message_seq=seq,
-            kind="text",
-            text=outbound,
-            session_open=True,
-            language=result.language,
-        )
-    except SendBlocked as exc:
-        _log_failure(settings, log, message, exc)
+        try:
+            hint_conn = open_db(settings)
+            try:
+                hint = take_language_hint(hint_conn, customer_id)
+            finally:
+                hint_conn.close()
+        except Exception:
+            hint = None
+        outbound = result.message
+        if hint:
+            outbound = f"{outbound.rstrip()}\n\n{hint}"
+        try:
+            deliver(
+                settings,
+                channel,
+                log,
+                store,
+                http,
+                customer_id=customer_id,
+                message_seq=seq,
+                kind="text",
+                text=outbound,
+                session_open=True,
+                language=result.language,
+                started=started,
+                turn=turn,
+            )
+        except SendBlocked as exc:
+            _log_failure(settings, log, message, exc)
+    finally:
+        if channel == "whatsapp" and not turn["delivered"]:
+            _log_unsent(settings, log, message, turn, started)
 
 
-def _language_turn(settings, channel, log, store, conn, http, customer_id: int, text: str) -> bool:
+def _language_turn(
+    settings, channel, log, store, conn, http, customer_id: int, text: str, *, started: float | None = None, turn: dict | None = None
+) -> bool:
     """Switch language or send the menu. True when this message was not a shop reply."""
     choice = interpret_language(text)
     if choice is None:
@@ -685,7 +756,7 @@ def _language_turn(settings, channel, log, store, conn, http, customer_id: int, 
             },
         )
         if channel == "whatsapp":
-            _send_language_menu(settings, channel, log, store, http, customer_id)
+            _send_language_menu(settings, channel, log, store, http, customer_id, started=started, turn=turn)
         return True
     code = save_language(conn, customer_id, choice["language"], channel="whatsapp" if channel == "whatsapp" else "simulator")
     confirmation = CONFIRM[code]
@@ -715,6 +786,8 @@ def _language_turn(settings, channel, log, store, conn, http, customer_id: int, 
                 text=confirmation,
                 session_open=True,
                 language=code,
+                started=started,
+                turn=turn,
             )
         except SendBlocked as exc:
             _log_failure(settings, log, _stub_message(text), exc)
@@ -728,7 +801,9 @@ def _customer_language(conn, customer_id: int) -> str:
     return str(row["language"])
 
 
-def _send_voice_fallback(settings, channel, log, store, conn, http, customer_id: int) -> None:
+def _send_voice_fallback(
+    settings, channel, log, store, conn, http, customer_id: int, *, started: float | None = None, turn: dict | None = None
+) -> None:
     """A voice note always gets a reply, in the customer's language."""
     language = _customer_language(conn, customer_id)
     text = VOICE_RETRY.get(language) or VOICE_RETRY["en"]
@@ -759,6 +834,8 @@ def _send_voice_fallback(settings, channel, log, store, conn, http, customer_id:
             text=text,
             session_open=True,
             language=language,
+            started=started,
+            turn=turn,
         )
     except (SendBlocked, WhatsAppError) as exc:
         _log_failure(settings, log, _stub_message(text), exc)
@@ -776,13 +853,23 @@ def _stub_message(text: str):
     )
 
 
-def _send_language_menu(settings, channel, log, store, http, customer_id: int) -> None:
+def _send_language_menu(
+    settings, channel, log, store, http, customer_id: int, *, started: float | None = None, turn: dict | None = None
+) -> None:
     """They just asked, so the session is open. Send the list, not hello_world."""
     from convoplex.integrations.whatsapp import WhatsAppClient
 
     try:
         client = WhatsAppClient(settings, channel=channel, http=http)
         client.send_interactive(settings.whatsapp_demo_to, language_list_interactive())
+        _mark_delivered(turn)
+        safe_append(
+            log,
+            settings,
+            kind="whatsapp_turn",
+            actor="whatsapp",
+            payload={"customer_id": customer_id, "e2e_ms": _e2e_ms(started), "outcome": "menu"},
+        )
     except (SendBlocked, WhatsAppError) as exc:
         _log_failure(settings, log, _stub_message("language"), exc)
         try:
@@ -798,6 +885,8 @@ def _send_language_menu(settings, channel, log, store, http, customer_id: int) -
                 text="Reply with English, Broken English, Igbo, Yoruba, or Hausa.",
                 session_open=True,
                 language="en",
+                started=started,
+                turn=turn,
             )
         except (SendBlocked, WhatsAppError):
             return

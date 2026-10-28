@@ -214,6 +214,29 @@ def interpret_language(value: str | None) -> dict | None:
     return None
 
 
+_EXTRA_ASK = re.compile(
+    r"\b(how much|how many|how|what|when|where|why|which|price|stock|deliver|order|buy|cost|naira|send|picture|photo)\b",
+    re.IGNORECASE,
+)
+
+
+def message_is_language_only(value: str | None) -> bool:
+    """True when the customer is only asking to change language, not also about the shop."""
+    if not (value or "").strip():
+        return False
+    if message_asks_something_else(value):
+        return False
+    choice = interpret_language(value)
+    if choice and choice["action"] == "set":
+        return True
+    return requested_language(value) is not None
+
+
+def message_asks_something_else(value: str | None) -> bool:
+    """True when the same message also asks a shop question, not only for a language."""
+    return bool(_EXTRA_ASK.search(value or ""))
+
+
 def requested_language(value: str | None) -> str | None:
     """A language the customer is asking to switch to, including a longer sentence.
 

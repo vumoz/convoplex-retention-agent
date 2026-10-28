@@ -236,6 +236,19 @@ def messages_url(phone_number_id: str, version: str | None = None) -> str:
     return f"{GRAPH_HOST}/{version or GRAPH_VERSION}/{phone_number_id}/messages"
 
 
+def build_mark_read_request(phone_number_id: str, message_id: str, version: str | None = None) -> dict:
+    """Mark an inbound message read and show the typing indicator. Does not call Graph."""
+    return {
+        "url": messages_url(phone_number_id, version),
+        "json": {
+            "messaging_product": "whatsapp",
+            "status": "read",
+            "message_id": message_id,
+            "typing_indicator": {"type": "text"},
+        },
+    }
+
+
 def build_send_text_request(phone_number_id: str, to: str, body: str, version: str | None = None) -> dict:
     """JSON body for a session text message. This function does not call Graph."""
     return {
@@ -508,6 +521,21 @@ class WhatsAppClient:
         dest = self._destination(to)
         spec = build_send_interactive_request(self._phone_id(), dest, interactive, self._version())
         return SendResult(**public_wamid(self._post_messages(spec)), to=dest, kind="interactive")
+
+    def mark_read(self, message_id: str) -> None:
+        """POST status=read plus a typing indicator. The raw message id is not logged here."""
+        message_id = (message_id or "").strip()
+        if not message_id:
+            return
+        if not self.settings.whatsapp_token:
+            raise WhatsAppError("WhatsApp is not configured. Missing: WHATSAPP_TOKEN.")
+        spec = build_mark_read_request(self._phone_id(), message_id, self._version())
+        self._request(
+            "POST",
+            spec["url"],
+            headers={**self._auth(), "Content-Type": "application/json"},
+            json=spec["json"],
+        )
 
     def send_text(self, to: str, body: str) -> SendResult:
         dest = self._destination(to)

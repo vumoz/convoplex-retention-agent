@@ -22,6 +22,7 @@ from convoplex.integrations.whatsapp import (
     SendBlocked,
     WhatsAppClient,
     WhatsAppError,
+    build_mark_read_request,
     build_media_metadata_url,
     build_send_image_request,
     build_send_template_request,
@@ -49,6 +50,16 @@ PHONE_ID = "123456789"
 
 
 def test_request_shapes_cover_text_template_image_and_media():
+    read = build_mark_read_request(PHONE_ID, "wamid.IN.1", version="v22.0")
+    assert read["url"] == "https://graph.facebook.com/v22.0/123456789/messages"
+    assert read["json"] == {
+        "messaging_product": "whatsapp",
+        "status": "read",
+        "message_id": "wamid.IN.1",
+        "typing_indicator": {"type": "text"},
+    }
+    assert "to" not in read["json"]
+
     text = build_send_text_request(PHONE_ID, DEMO_DIGITS, "Hello", version="v22.0")
     assert text["url"] == "https://graph.facebook.com/v22.0/123456789/messages"
     assert text["json"]["messaging_product"] == "whatsapp"
@@ -320,11 +331,17 @@ def test_inbound_text_is_deduped_and_replied_only_to_the_demo_phone(shop, tmp_pa
     assert ignored.json()["ignored"] == 1
     assert ignored.json()["processed"] is False
 
-    assert len(calls) == 1
-    outbound = json.loads(calls[0].content)
+    assert len(calls) == 2
+    read = json.loads(calls[0].content)
+    assert read["status"] == "read"
+    assert read["message_id"] == "wamid.IN.1"
+    assert read["typing_indicator"] == {"type": "text"}
+    assert "to" not in read
+    outbound = json.loads(calls[1].content)
     assert outbound["type"] == "text"
     assert outbound["to"] == DEMO_DIGITS
     assert SYNTHETIC not in calls[0].content.decode()
+    assert SYNTHETIC not in calls[1].content.decode()
     thread = client.get("/v1/customers/1/thread").json()
     roles = [item["role"] for item in thread["messages"]]
     assert roles.count("customer") == 1
@@ -355,6 +372,10 @@ def test_inbound_audio_is_transcribed_and_answered(shop, tmp_path):
             return httpx.Response(200, content=wav)
         if request.url.path.endswith("/messages"):
             body = json.loads(request.content)
+            if body.get("status") == "read":
+                assert body["message_id"] == "wamid.AUDIO"
+                assert body["typing_indicator"] == {"type": "text"}
+                return httpx.Response(200, json={"success": True})
             assert body["to"] == DEMO_DIGITS
             assert body["type"] == "text"
             assert SYNTHETIC not in request.content.decode()
@@ -407,8 +428,12 @@ def test_inbound_audio_is_transcribed_and_answered(shop, tmp_path):
     assert response.json()["processed"] is True
     hosts = [call.url.host for call in calls]
     assert hosts[0] == "graph.facebook.com"
-    assert hosts[1] == "lookaside.fbsbx.com"
-    assert calls[2].url.path.endswith("/messages")
+    assert json.loads(calls[0].content)["status"] == "read"
+    assert hosts[1] == "graph.facebook.com"
+    assert calls[1].url.path.endswith("/media-9")
+    assert hosts[2] == "lookaside.fbsbx.com"
+    assert calls[3].url.path.endswith("/messages")
+    assert json.loads(calls[3].content)["type"] == "text"
     logged = client.get("/v1/actions").json()["entries"]
     assert any(entry["kind"] == "model_call" and entry["payload"].get("task") == "transcribe" for entry in logged)
     thread = client.get("/v1/customers/1/thread").json()
