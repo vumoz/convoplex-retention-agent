@@ -50,11 +50,11 @@ SEED = (
 )
 
 _ASK = {
-    "en": 'What does "{phrase}" mean?',
-    "pcm": 'Wetin "{phrase}" mean?',
-    "ig": 'Kedu ihe "{phrase}" pụtara?',
-    "yo": 'Kí ni "{phrase}" túmọ̀ sí?',
-    "ha": 'Menene ma\'anar "{phrase}"?',
+    "en": "You mean {phrase}?",
+    "pcm": "You mean {phrase}?",
+    "ig": "Ị pụtara {phrase}?",
+    "yo": "Ṣé o túmọ̀ {phrase}?",
+    "ha": "Kana nufin {phrase}?",
 }
 
 _HOLD = {
@@ -80,12 +80,17 @@ def normalize_phrase(value: str | None) -> str:
     return text.strip(" \"'`.,;:!?")
 
 
-def clarify_question(phrase: str, language: str | None) -> str:
+def clarify_question(phrase: str, language: str | None, understood: str | None = None) -> str:
+    """One short line. When we understood part of the message, answer that part first."""
     try:
         code = clean_language(language)
     except ValueError:
         code = "en"
-    return _ASK.get(code, _ASK["en"]).format(phrase=phrase)
+    tail = _ASK.get(code, _ASK["en"]).format(phrase=phrase)
+    lead = (understood or "").strip().rstrip(".?!")
+    if lead:
+        return f"{lead}. {tail}"
+    return tail
 
 
 def hold_line(language: str | None) -> str:
