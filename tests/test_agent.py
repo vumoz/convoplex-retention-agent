@@ -100,7 +100,7 @@ def test_accept_without_a_tool_call_still_places_the_order(shop, log_path):
     class QuietModel:
         mode = "mock"
 
-        def complete(self, messages, *, tools, max_tokens):
+        def complete(self, messages, *, tools, max_tokens, reasoning_effort=None, retry_on_length=True):
             del messages, tools, max_tokens
             return Completion(content="INTENT: accept", tool_calls=[], finish_reason="stop")
 

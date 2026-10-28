@@ -198,6 +198,72 @@ def test_length_retry_keeps_the_second_completion():
         raise AssertionError("expected LLMError")
 
 
+def test_reply_length_falls_back_without_doubling_the_budget():
+    """A short WhatsApp reply must not spend a second call at 5000 tokens."""
+    sent: list[int] = []
+
+    def length(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        sent.append(body["max_tokens"])
+        assert body["reasoning_effort"] == "minimal"
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"finish_reason": "length", "message": {"role": "assistant", "content": None}}
+                ],
+                "usage": {"completion_tokens_details": {"reasoning_tokens": body["max_tokens"]}},
+            },
+        )
+
+    llm = LiveMuse(
+        api_key="sk-test-secret-value",
+        base_url="https://api.meta.ai/v1",
+        model="muse-spark-1.3",
+        client=httpx.Client(transport=httpx.MockTransport(length)),
+    )
+    done = llm.complete(
+        [{"role": "user", "content": "hi"}],
+        tools=TOOLS,
+        max_tokens=5,
+        reasoning_effort="minimal",
+        retry_on_length=False,
+    )
+    assert sent == [MIN_TOOL_TOKENS]
+    assert done.finish_reason == "length"
+    assert done.content is None
+    assert len(done.calls) == 1
+
+    def with_text(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content)["max_tokens"])
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "message": {"role": "assistant", "content": "Zan yi amfani da Hausa."},
+                    }
+                ]
+            },
+        )
+
+    llm = LiveMuse(
+        api_key="sk-test-secret-value",
+        base_url="https://api.meta.ai/v1",
+        model="muse-spark-1.3",
+        client=httpx.Client(transport=httpx.MockTransport(with_text)),
+    )
+    kept = llm.complete(
+        [{"role": "user", "content": "hi"}],
+        tools=TOOLS,
+        max_tokens=5,
+        retry_on_length=True,
+    )
+    assert kept.content == "Zan yi amfani da Hausa."
+    assert sent == [MIN_TOOL_TOKENS, MIN_TOOL_TOKENS]
+
+
 def test_max_tokens_floor():
     assert MIN_TOOL_TOKENS == 2500
     assert effective_max_tokens(300, TOOLS) == 2500

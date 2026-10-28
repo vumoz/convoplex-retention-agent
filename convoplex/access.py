@@ -217,10 +217,16 @@ class CappedLLM:
         self.live = live
         self.mock = mock
 
-    def complete(self, messages, *, tools, max_tokens):
+    def complete(self, messages, *, tools, max_tokens, reasoning_effort=None, retry_on_length=True):
         chosen = self.mock
         if self.settings.llm_mode == "live" and self.live is not None:
             mode = select_mode(self.settings, admin=False, task="chat", fail_open=True)
             if mode == "live":
                 chosen = self.live
-        return chosen.complete(messages, tools=tools, max_tokens=max_tokens)
+        return chosen.complete(
+            messages,
+            tools=tools,
+            max_tokens=max_tokens,
+            reasoning_effort=reasoning_effort,
+            retry_on_length=retry_on_length,
+        )

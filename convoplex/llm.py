@@ -227,6 +227,18 @@ def tool_results(messages: list[dict]) -> dict[str, dict]:
     return found
 
 
+def _customer_text(messages: list[dict]) -> str:
+    """The customer's words, not the short follow-up note the agent appends."""
+    parts: list[str] = []
+    for message in messages:
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str) and not content.startswith("The language is saved."):
+            parts.append(content)
+    return "\n".join(parts).strip() or _last_user_text(messages)
+
+
 def _last_user_text(messages: list[dict]) -> str:
     for message in reversed(messages):
         if message.get("role") == "user":
@@ -261,17 +273,30 @@ class LiveMuse:
         if self._owns_client:
             self._client.close()
 
-    def complete(self, messages: list[dict], *, tools: list[dict] | None, max_tokens: int) -> Completion:
+    def complete(
+        self,
+        messages: list[dict],
+        *,
+        tools: list[dict] | None,
+        max_tokens: int,
+        reasoning_effort: str | None = None,
+        retry_on_length: bool = True,
+    ) -> Completion:
         if not self.api_key:
             raise LLMError(
                 "META_API_KEY is not set. Export it in your shell, or run with CONVOPLEX_LLM=mock."
             )
         budget = effective_max_tokens(max_tokens, tools)
         attempts: list[ModelCall] = []
-        first: Completion | None = None
         for attempt in (1, 2):
             try:
-                completion, record = self._once(messages, tools=tools, max_tokens=budget, attempt=attempt)
+                completion, record = self._once(
+                    messages,
+                    tools=tools,
+                    max_tokens=budget,
+                    attempt=attempt,
+                    reasoning_effort=reasoning_effort,
+                )
             except LLMError as exc:
                 exc.calls = list(attempts) + list(exc.calls or [])
                 raise
@@ -279,20 +304,19 @@ class LiveMuse:
             completion.calls = list(attempts)
             if completion.finish_reason != "length":
                 return completion
-            if attempt == 1:
-                first = completion
-                budget *= 2
-                continue
-            if completion.tool_calls or completion.content:
+            # A usable tool call or any visible text is enough. Doubling the
+            # budget only spends more reasoning tokens on a short reply.
+            if completion.tool_calls or (completion.content and completion.content.strip()):
                 return completion
-            if first and (first.tool_calls or first.content):
-                first.calls = list(attempts)
-                return first
-            raise LLMError(
-                "Muse Spark stopped because max_tokens was used up by reasoning "
-                f"(tried {attempts[0].max_tokens}, then {budget}).",
-                calls=attempts,
-            )
+            if not retry_on_length:
+                return completion
+            if attempt == 2:
+                raise LLMError(
+                    "Muse Spark stopped because max_tokens was used up by reasoning "
+                    f"(tried {attempts[0].max_tokens}, then {budget}).",
+                    calls=attempts,
+                )
+            budget *= 2
         raise LLMError("Muse Spark did not return a completion.", calls=attempts)
 
     def _once(
@@ -302,12 +326,18 @@ class LiveMuse:
         tools: list[dict] | None,
         max_tokens: int,
         attempt: int,
+        reasoning_effort: str | None = None,
     ) -> tuple[Completion, ModelCall]:
         payload: dict = {
             "model": self.model,
             "messages": messages,
             "max_tokens": max_tokens,
         }
+        # muse-spark-1.3 always reasons. Chat Completions takes top-level
+        # reasoning_effort. "none" is rejected with HTTP 400. "minimal" is the
+        # shortest effort the docs allow.
+        if reasoning_effort:
+            payload["reasoning_effort"] = reasoning_effort
         if tools:
             payload["tools"] = tools
         started = time.perf_counter()
@@ -361,7 +391,15 @@ class MockMuse:
 
     mode = "mock"
 
-    def complete(self, messages: list[dict], *, tools: list[dict] | None, max_tokens: int) -> Completion:
+    def complete(
+        self,
+        messages: list[dict],
+        *,
+        tools: list[dict] | None,
+        max_tokens: int,
+        reasoning_effort: str | None = None,
+        retry_on_length: bool = True,
+    ) -> Completion:
         context = parse_context(messages)
         results = tool_results(messages)
         if context.get("task") == "reply":
@@ -419,10 +457,19 @@ class MockMuse:
     def _reply(self, messages: list[dict], context: dict, results: dict[str, dict]) -> Completion:
         from convoplex.languages import CONFIRM, requested_language
 
-        user_text = _last_user_text(messages)
+        user_text = _customer_text(messages)
         if "set_language" in results and results["set_language"].get("ok"):
+            from convoplex.languages import message_asks_something_else
+
             code = results["set_language"]["language"]
             confirmation = results["set_language"].get("confirmation") or CONFIRM[code]
+            if message_asks_something_else(user_text):
+                spoken = {**context, "language": code}
+                answer = question_message(spoken, "rice", 78000, 12)
+                return Completion(
+                    content=f"{confirmation} {answer}\nINTENT: question",
+                    finish_reason="stop",
+                )
             return Completion(content=f"{confirmation}\nINTENT: question", finish_reason="stop")
         requested = requested_language(user_text)
         if requested and requested != context.get("language"):

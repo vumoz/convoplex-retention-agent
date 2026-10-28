@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 
 from convoplex.actionlog import ActionLog
 from convoplex.context import agent_context
+from convoplex.languages import CONFIRM, guard_reply, message_asks_something_else, message_is_language_only
 from convoplex.llm import Completion, LLMError, ToolCall, classify_reply, split_intent
 from convoplex.messages import (
     accept_message,
@@ -136,10 +137,18 @@ def _run(
     trace: list[str] = []
     completion: Completion | None = None
     switched_to: str | None = None
+    language_only = task == "reply" and message_is_language_only(user_text)
+    followups = 0
+    reply_kwargs: dict = {}
+    if task == "reply":
+        # muse-spark-1.3 always reasons. "minimal" is the shortest effort the
+        # chat API accepts ("none" is HTTP 400). A length finish must not
+        # double the budget: that retry spent most of the live language switch.
+        reply_kwargs = {"reasoning_effort": "minimal", "retry_on_length": False}
 
     for _round in range(1, MAX_ROUNDS + 1):
         try:
-            completion = llm.complete(messages, tools=TOOLS, max_tokens=max_tokens)
+            completion = llm.complete(messages, tools=TOOLS, max_tokens=max_tokens, **reply_kwargs)
         except LLMError as exc:
             _log_model_calls(log, getattr(exc, "calls", None), customer_id, task)
             raise
@@ -194,6 +203,25 @@ def _run(
                     "content": json.dumps(result, ensure_ascii=False),
                 }
             )
+        if switched_to and task == "reply":
+            only_set = all(name == "set_language" for name in trace)
+            extra = message_asks_something_else(user_text)
+            if language_only or (only_set and not extra):
+                break
+            if followups >= 1:
+                break
+            followups += 1
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "The language is saved. Answer the rest of the customer's message "
+                        "in that language, in one or two short sentences. Start with the "
+                        "confirmation from set_language. Do not call set_language again."
+                    ),
+                }
+            )
+            continue
     else:
         raise LLMError(
             "Muse Spark kept calling tools without a final message. Stopped after 6 rounds."
@@ -235,12 +263,14 @@ def _run(
             text = accept_message(profile, order, delivery)
         text = polish_acceptance(text, profile, delivery, user_text)
 
-    from convoplex.languages import CONFIRM, guard_reply
-
     if switched_to:
         profile["language"] = switched_to
         confirmation = CONFIRM[switched_to]
-        text = confirmation
+        extra = message_asks_something_else(user_text)
+        if language_only or not extra or not (text or "").strip():
+            text = confirmation
+        elif confirmation not in text:
+            text = f"{confirmation}\n\n{text.strip()}"
     text = guard_reply(text, profile.get("language"))
     if task == "winback" and offer and offer.get("ok"):
         mark_offer_sent(conn, int(offer["offer_id"]), text, language=profile.get("language"))
@@ -275,23 +305,27 @@ def _run(
 def _log_model_calls(log: ActionLog, calls, customer_id: int, task: str) -> None:
     for call in calls or []:
         usage = getattr(call, "usage", None) or {}
+        payload = {
+            "customer_id": customer_id,
+            "task": task,
+            "attempt": getattr(call, "attempt", 1),
+            "max_tokens": getattr(call, "max_tokens", None),
+            "finish_reason": getattr(call, "finish_reason", None),
+            "latency_ms": getattr(call, "latency_ms", None),
+            "usage": {
+                "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+                "completion_tokens": int(usage.get("completion_tokens") or 0),
+                "reasoning_tokens": int(usage.get("reasoning_tokens") or 0),
+                "total_tokens": int(usage.get("total_tokens") or 0),
+            },
+        }
+        if task == "reply":
+            payload["reasoning_effort"] = "minimal"
+            payload["retry_on_length"] = False
         log.append(
             kind="model_call",
             actor="agent",
-            payload={
-                "customer_id": customer_id,
-                "task": task,
-                "attempt": getattr(call, "attempt", 1),
-                "max_tokens": getattr(call, "max_tokens", None),
-                "finish_reason": getattr(call, "finish_reason", None),
-                "latency_ms": getattr(call, "latency_ms", None),
-                "usage": {
-                    "prompt_tokens": int(usage.get("prompt_tokens") or 0),
-                    "completion_tokens": int(usage.get("completion_tokens") or 0),
-                    "reasoning_tokens": int(usage.get("reasoning_tokens") or 0),
-                    "total_tokens": int(usage.get("total_tokens") or 0),
-                },
-            },
+            payload=payload,
         )
 
 

@@ -96,12 +96,12 @@ def test_webhook_counter_failure_logs_and_still_calls_the_model(tmp_path, monkey
     calls = {"live": 0, "mock": 0}
 
     class Live:
-        def complete(self, messages, *, tools, max_tokens):
+        def complete(self, messages, *, tools, max_tokens, reasoning_effort=None, retry_on_length=True):
             calls["live"] += 1
             return "reply"
 
     class Mock:
-        def complete(self, messages, *, tools, max_tokens):
+        def complete(self, messages, *, tools, max_tokens, reasoning_effort=None, retry_on_length=True):
             calls["mock"] += 1
             return "mock"
 
