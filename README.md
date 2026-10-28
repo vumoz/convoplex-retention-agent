@@ -79,6 +79,14 @@ Every retailer, customer, order, product, and offer is fictional, and the schema
 
 The book is 500 customers across six shops, with orders from 27 Apr 2026 to 26 Oct 2026. Scores use a scenario date of 27 Oct 2026 so the demo does not drift after the event. Shops include Mama Nkechi Provisions (Ikeja), Alhaja Bisi Textiles (Lagos Island), and Wuse Fresh Basket (Wuse 2).
 
+## Self-learning language trainer
+
+The agent keeps a lexicon of words it has learned. Seed rows come from `docs/broken-english-notes.md` (Broken English (Nigerian Pidgin)): wan, abeg, wahala, sabi, chop, how much e be, and kpai. On each reply the active words for that customer's language are added to the prompt as a data block, `glossary: phrase = meaning`, not as instructions.
+
+When the model does not understand a word, in English, Broken English (Nigerian Pidgin), Igbo, Yoruba, or Hausa, it asks one short question in the customer's language. The same phrase is not asked again in that conversation, and the offer stays as it is. When the customer explains a word, or confirms one the model inferred, `learn_phrase` stores it immediately. Repeat explanations increment the confirmation count. Victor can remove a word from the admin dashboard. Remove is a soft delete and can be restored. The public demo lists the words and cannot remove them.
+
+`GET /v1/lexicon` is a public read with no phone numbers or customer names. `POST /v1/lexicon/{id}/remove` and `POST /v1/lexicon/{id}/restore` require the admin token.
+
 ## How to run locally
 
 Python 3.11 or newer.

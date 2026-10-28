@@ -89,6 +89,8 @@ def test_tool_round_trip_matches_documented_shape(shop, log_path):
         "place_order",
         "get_delivery_options",
         "set_language",
+        "ask_phrase",
+        "learn_phrase",
     ]
     assert body["tools"] == TOOLS
     assert body["messages"][0]["role"] == "system"
