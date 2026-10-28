@@ -6,6 +6,7 @@ import sqlite3
 from datetime import datetime, timezone
 
 from convoplex.db import scenario_as_of, transaction
+from convoplex.languages import CONFIRM, clean_language, language_label, save_language
 
 MIN_DISCOUNT = 5
 MAX_DISCOUNT = 15
@@ -109,6 +110,30 @@ TOOLS = [
                     "customer_id": {"type": "integer"},
                 },
                 "required": ["retailer_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_language",
+            "description": (
+                "Switch the customer's saved language. Call this before any other tool when they ask "
+                "to speak English, Broken English, Igbo, Yoruba, or Hausa, in any wording and in any "
+                "language, including a misheard name. After it returns, write only in the new language "
+                "and start with the confirmation. Do not keep replying in the previous language."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "customer_id": {"type": "integer"},
+                    "language": {
+                        "type": "string",
+                        "enum": ["en", "pcm", "ig", "yo", "ha"],
+                        "description": "en English, pcm Broken English, ig Igbo, yo Yoruba, ha Hausa",
+                    },
+                },
+                "required": ["customer_id", "language"],
             },
         },
     },
@@ -482,6 +507,22 @@ def get_delivery_options(
     }
 
 
+def set_language_tool(conn: sqlite3.Connection, customer_id: int, language: str) -> dict:
+    """Save a language the customer asked for and hand back the confirmation."""
+    code = clean_language(language)
+    save_language(conn, int(customer_id), code, channel="whatsapp")
+    return {
+        "ok": True,
+        "language": code,
+        "label": language_label(code),
+        "confirmation": CONFIRM[code],
+        "instruction": (
+            f"Write the rest of this turn only in {language_label(code)}. "
+            "Start with the confirmation. Do not continue in the previous language."
+        ),
+    }
+
+
 def execute_tool(conn: sqlite3.Connection, name: str, arguments: dict) -> dict:
     functions = {
         "check_stock": check_stock,
@@ -489,6 +530,7 @@ def execute_tool(conn: sqlite3.Connection, name: str, arguments: dict) -> dict:
         "create_offer": create_offer,
         "place_order": place_order,
         "get_delivery_options": get_delivery_options,
+        "set_language": set_language_tool,
     }
     fn = functions.get(name)
     if fn is None:

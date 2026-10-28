@@ -924,7 +924,7 @@ def _thread_messages(entries: list[dict], customer_id: int, statuses: dict[str, 
                 seq,
                 {
                     "role": "shop",
-                    "text": view.get("caption") or view.get("note") or "WhatsApp template hello_world (en_US).",
+                    "text": _sent_text(view),
                     "ts": view.get("ts"),
                     "seq": seq,
                     "whatsapp": view,
@@ -949,8 +949,22 @@ def _whatsapp_view(entry: dict, statuses: dict[str, str]) -> dict:
         "wamid_tail": payload.get("wamid_tail"),
         "note": redact_wamids(payload.get("note") or ""),
         "caption": redact_wamids(payload.get("caption") or ""),
+        "body": redact_wamids(payload.get("body") or ""),
         "ts": entry.get("ts"),
     }
+
+
+def _sent_text(view: dict) -> str:
+    """The thread shows the words that were actually sent, not a template label on a text send."""
+    if view.get("kind") == "template":
+        return view.get("note") or view.get("body") or "WhatsApp template hello_world (en_US)."
+    if view.get("body"):
+        return view["body"]
+    if view.get("caption"):
+        return view["caption"]
+    if view.get("note"):
+        return view["note"]
+    return "WhatsApp message."
 
 
 def _latest_offer(conn, customer_id: int) -> dict | None:

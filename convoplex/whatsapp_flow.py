@@ -254,6 +254,7 @@ def remember_send(
     kind: str,
     note: str,
     caption: str | None,
+    body: str | None = None,
 ) -> None:
     store.set_status(wamid_hash, "sent")
     payload: dict = {
@@ -264,6 +265,8 @@ def remember_send(
         "note": note,
         "status": "sent",
     }
+    if body:
+        payload["body"] = body
     if customer_id is not None:
         payload["customer_id"] = customer_id
     if message_seq is not None:
@@ -317,6 +320,7 @@ def deliver(
             kind="image",
             note="",
             caption=caption,
+            body=caption or "",
         )
         return _delivery_body(
             customer_id, "image", result.wamid_hash, result.wamid_tail, settings, "open", ""
@@ -334,6 +338,7 @@ def deliver(
             kind="text",
             note="",
             caption=None,
+            body=text,
         )
         return _delivery_body(
             customer_id, "text", result.wamid_hash, result.wamid_tail, settings, "open", ""
@@ -351,6 +356,7 @@ def deliver(
         kind="template",
         note=note,
         caption=None,
+        body="WhatsApp template hello_world (en_US).",
     )
     return _delivery_body(
         customer_id, "template", result.wamid_hash, result.wamid_tail, settings, "closed", note
@@ -683,7 +689,7 @@ def _language_turn(settings, channel, log, store, conn, http, customer_id: int, 
         return True
     code = save_language(conn, customer_id, choice["language"], channel="whatsapp" if channel == "whatsapp" else "simulator")
     confirmation = CONFIRM[code]
-    log.append(
+    written = log.append(
         kind="message",
         actor="agent",
         payload={
@@ -704,7 +710,7 @@ def _language_turn(settings, channel, log, store, conn, http, customer_id: int, 
                 store,
                 http,
                 customer_id=customer_id,
-                message_seq=None,
+                message_seq=int(written["seq"]),
                 kind="text",
                 text=confirmation,
                 session_open=True,

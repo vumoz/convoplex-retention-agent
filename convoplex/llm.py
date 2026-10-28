@@ -417,7 +417,20 @@ class MockMuse:
         return Completion(content=winback_message(context, offer), finish_reason="stop")
 
     def _reply(self, messages: list[dict], context: dict, results: dict[str, dict]) -> Completion:
-        intent = classify_reply(_last_user_text(messages))
+        from convoplex.languages import CONFIRM, requested_language
+
+        user_text = _last_user_text(messages)
+        if "set_language" in results and results["set_language"].get("ok"):
+            code = results["set_language"]["language"]
+            confirmation = results["set_language"].get("confirmation") or CONFIRM[code]
+            return Completion(content=f"{confirmation}\nINTENT: question", finish_reason="stop")
+        requested = requested_language(user_text)
+        if requested and requested != context.get("language"):
+            return _calls(
+                results,
+                [("set_language", {"customer_id": context["customer_id"], "language": requested})],
+            )
+        intent = classify_reply(user_text)
         offer = context.get("open_offer")
         user_text = _last_user_text(messages)
         if intent == "accept" and offer and _known(context, results, "get_delivery_options") is None:
