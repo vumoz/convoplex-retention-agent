@@ -55,6 +55,7 @@ from convoplex.integrations.whatsapp import (
     signature_matches,
     verify_subscription,
 )
+from convoplex.languages import clean_language, language_label, save_language
 from convoplex.llm import LLMError, LiveMuse, MockMuse
 from convoplex.metrics import snapshot
 from convoplex.synthetic.generate import DEFAULT_CUSTOMERS, DEFAULT_SEED, generate, reset_and_seed, seed_if_empty
@@ -87,6 +88,10 @@ class DemoCustomerIn(BaseModel):
 
 class AdminIn(BaseModel):
     token: str = Field(min_length=1, max_length=500)
+
+
+class LanguageIn(BaseModel):
+    language: str = Field(min_length=2, max_length=8)
 
 
 def build_llm(settings: Settings):
@@ -273,6 +278,19 @@ def create_app(settings: Settings | None = None, *, generate_if_missing: bool = 
         if row is None:
             raise HTTPException(404, "customer not found")
         return _public(row)
+
+    @app.post("/v1/customers/{customer_id}/language", dependencies=[Depends(admin_dep)])
+    def customer_language(customer_id: int, body: LanguageIn, conn=Depends(get_conn)):
+        row = get_customer(conn, customer_id)
+        if row is None:
+            raise HTTPException(404, "customer not found")
+        try:
+            clean_language(body.language)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        save_language(conn, customer_id, body.language, channel="dashboard")
+        updated = get_customer(conn, customer_id)
+        return _public(updated)
 
     @app.get("/v1/customers/{customer_id}/thread")
     def thread(customer_id: int, conn=Depends(get_conn)):
@@ -471,7 +489,7 @@ def create_app(settings: Settings | None = None, *, generate_if_missing: bool = 
             if not item.message_id or normalize_phone(item.from_phone) != demo:
                 ignored += 1
                 continue
-            if item.kind not in {"text", "audio"}:
+            if item.kind not in {"text", "audio", "interactive"}:
                 ignored += 1
                 continue
             public = public_wamid(item.message_id)
@@ -800,6 +818,10 @@ def _public(row: dict) -> dict:
         "city": row["city"],
         "area": row["area"],
         "language": row["language"],
+        "language_label": language_label(row.get("language")),
+        "language_opted_in": bool(row.get("language_opted_in")),
+        "language_opted_in_at": row.get("language_opted_in_at"),
+        "language_channel": row.get("language_channel"),
         "retailer_id": row["retailer_id"],
         "retailer_name": row["retailer_name"],
         "segment": row["segment"],

@@ -56,6 +56,24 @@ def snapshot(conn: sqlite3.Connection, actions: list[dict] | None = None) -> dic
         """
     ).fetchone()
     at_risk = list_at_risk(conn, as_of=scenario_as_of(conn), limit=10_000)
+    by_language = [
+        {
+            "language": row["language"],
+            "customers": int(row["customers"] or 0),
+            "offers_sent": int(row["offers_sent"] or 0),
+        }
+        for row in conn.execute(
+            """
+            SELECT c.language AS language,
+                   COUNT(DISTINCT c.id) AS customers,
+                   SUM(CASE WHEN o.status IN ('sent', 'accepted', 'declined') THEN 1 ELSE 0 END) AS offers_sent
+            FROM customers c
+            LEFT JOIN offers o ON o.customer_id = c.id
+            GROUP BY c.language
+            ORDER BY c.language
+            """
+        ).fetchall()
+    ]
     return {
         "offers_sent": sent,
         "offers_accepted": accepted,
@@ -64,6 +82,7 @@ def snapshot(conn: sqlite3.Connection, actions: list[dict] | None = None) -> dic
         "naira_recovered": int(recovered["naira"] or 0),
         "at_risk_customers": len(at_risk),
         "currency": "NGN",
+        "by_language": by_language,
         "synthetic": True,
         **usage_totals(actions),
     }

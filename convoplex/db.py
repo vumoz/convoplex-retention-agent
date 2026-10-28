@@ -37,7 +37,11 @@ CREATE TABLE IF NOT EXISTS customers (
     phone TEXT NOT NULL UNIQUE,
     city TEXT NOT NULL,
     area TEXT NOT NULL,
-    language TEXT NOT NULL CHECK (language IN ('en', 'pcm')),
+    language TEXT NOT NULL DEFAULT 'en' CHECK (language IN ('en', 'pcm', 'ig', 'yo', 'ha')),
+    language_opted_in INTEGER NOT NULL DEFAULT 0,
+    language_opted_in_at TEXT,
+    language_channel TEXT,
+    language_hint_sent INTEGER NOT NULL DEFAULT 0,
     archetype TEXT NOT NULL DEFAULT 'manual',
     synthetic INTEGER NOT NULL DEFAULT 1 CHECK (synthetic = 1)
 );
@@ -234,6 +238,146 @@ CREATE TABLE IF NOT EXISTS app_kv (
 """
 
 
+_LANGUAGE_READY: set[str] = set()
+
+
+def ensure_customer_language(conn, *, postgres: bool, key: str) -> None:
+    """Add language opt-in columns and widen the check. Safe to run on live Neon."""
+    if key in _LANGUAGE_READY:
+        return
+    if postgres:
+        _ensure_postgres_language(conn)
+    else:
+        _ensure_sqlite_language(conn)
+    conn.commit()
+    _LANGUAGE_READY.add(key)
+
+
+def _column_names_sqlite(conn) -> set[str]:
+    return {str(row["name"]) for row in conn.execute("PRAGMA table_info(customers)").fetchall()}
+
+
+def _ensure_sqlite_language(conn) -> None:
+    if "customers" not in {
+        str(row["name"]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }:
+        return
+    row = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'customers'").fetchone()
+    ddl = str(row["sql"] or "") if row else ""
+    if "'ig'" not in ddl:
+        _rebuild_sqlite_customers(conn)
+        return
+    columns = _column_names_sqlite(conn)
+    if "language_opted_in" not in columns:
+        conn.execute("ALTER TABLE customers ADD COLUMN language_opted_in INTEGER NOT NULL DEFAULT 0")
+    if "language_opted_in_at" not in columns:
+        conn.execute("ALTER TABLE customers ADD COLUMN language_opted_in_at TEXT")
+    if "language_channel" not in columns:
+        conn.execute("ALTER TABLE customers ADD COLUMN language_channel TEXT")
+    if "language_hint_sent" not in columns:
+        conn.execute("ALTER TABLE customers ADD COLUMN language_hint_sent INTEGER NOT NULL DEFAULT 0")
+    _backfill_language_opt_in(conn)
+
+
+def _rebuild_sqlite_customers(conn) -> None:
+    """SQLite cannot widen a CHECK constraint in place."""
+    conn.execute("PRAGMA foreign_keys = OFF")
+    columns = _column_names_sqlite(conn)
+    conn.execute(
+        """
+        CREATE TABLE customers_new (
+            id INTEGER PRIMARY KEY,
+            retailer_id INTEGER NOT NULL REFERENCES retailers(id),
+            full_name TEXT NOT NULL,
+            phone TEXT NOT NULL UNIQUE,
+            city TEXT NOT NULL,
+            area TEXT NOT NULL,
+            language TEXT NOT NULL DEFAULT 'en' CHECK (language IN ('en', 'pcm', 'ig', 'yo', 'ha')),
+            language_opted_in INTEGER NOT NULL DEFAULT 0,
+            language_opted_in_at TEXT,
+            language_channel TEXT,
+            language_hint_sent INTEGER NOT NULL DEFAULT 0,
+            archetype TEXT NOT NULL DEFAULT 'manual',
+            synthetic INTEGER NOT NULL DEFAULT 1 CHECK (synthetic = 1)
+        )
+        """
+    )
+    opted = "language_opted_in" if "language_opted_in" in columns else "0"
+    opted_at = "language_opted_in_at" if "language_opted_in_at" in columns else "NULL"
+    channel = "language_channel" if "language_channel" in columns else "NULL"
+    hint = "language_hint_sent" if "language_hint_sent" in columns else "0"
+    conn.execute(
+        f"""
+        INSERT INTO customers_new (
+            id, retailer_id, full_name, phone, city, area, language,
+            language_opted_in, language_opted_in_at, language_channel, language_hint_sent,
+            archetype, synthetic
+        )
+        SELECT id, retailer_id, full_name, phone, city, area, language,
+               {opted}, {opted_at}, {channel}, {hint}, archetype, synthetic
+        FROM customers
+        """
+    )
+    conn.execute("DROP TABLE customers")
+    conn.execute("ALTER TABLE customers_new RENAME TO customers")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_customers_retailer ON customers(retailer_id)")
+    conn.execute("PRAGMA foreign_keys = ON")
+    _backfill_language_opt_in(conn)
+
+
+def _ensure_postgres_language(conn) -> None:
+    present = {
+        str(row["column_name"])
+        for row in conn.execute(
+            """
+            SELECT column_name FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = 'customers'
+            """
+        ).fetchall()
+    }
+    if not present:
+        return
+    if "language_opted_in" not in present:
+        conn.execute(
+            "ALTER TABLE customers ADD COLUMN IF NOT EXISTS language_opted_in INTEGER NOT NULL DEFAULT 0"
+        )
+    if "language_opted_in_at" not in present:
+        conn.execute("ALTER TABLE customers ADD COLUMN IF NOT EXISTS language_opted_in_at TEXT")
+    if "language_channel" not in present:
+        conn.execute("ALTER TABLE customers ADD COLUMN IF NOT EXISTS language_channel TEXT")
+    if "language_hint_sent" not in present:
+        conn.execute(
+            "ALTER TABLE customers ADD COLUMN IF NOT EXISTS language_hint_sent INTEGER NOT NULL DEFAULT 0"
+        )
+    row = conn.execute(
+        """
+        SELECT pg_get_constraintdef(oid) AS def
+        FROM pg_constraint
+        WHERE conname = 'customers_language_check'
+        """
+    ).fetchone()
+    definition = str(row["def"]) if row else ""
+    if "ig" not in definition:
+        conn.execute("ALTER TABLE customers DROP CONSTRAINT IF EXISTS customers_language_check")
+        conn.execute(
+            "ALTER TABLE customers ADD CONSTRAINT customers_language_check "
+            "CHECK (language IN ('en', 'pcm', 'ig', 'yo', 'ha'))"
+        )
+    _backfill_language_opt_in(conn)
+
+
+def _backfill_language_opt_in(conn) -> None:
+    """A non-English language already on the row is an explicit opt-in."""
+    conn.execute(
+        """
+        UPDATE customers
+        SET language_opted_in = 1,
+            language_channel = COALESCE(language_channel, 'seed')
+        WHERE language <> 'en' AND language_opted_in = 0
+        """
+    )
+
+
 def open_db(settings):
     """SQLite file for local and tests. Postgres when DATABASE_URL is set.
 
@@ -243,9 +387,12 @@ def open_db(settings):
     if getattr(settings, "database_url", None):
         from convoplex.pg import connect_postgres
 
-        return connect_postgres(settings.database_url, postgres_schema())
+        conn = connect_postgres(settings.database_url, postgres_schema())
+        ensure_customer_language(conn, postgres=True, key=settings.database_url)
+        return conn
     conn = connect(settings.db_path)
     conn.executescript(RUNTIME_TABLES)
+    ensure_customer_language(conn, postgres=False, key=str(settings.db_path))
     return conn
 
 

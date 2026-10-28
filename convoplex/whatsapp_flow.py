@@ -44,6 +44,13 @@ from convoplex.integrations.whatsapp import (
     redact_wamids,
     require_allowlisted,
 )
+from convoplex.languages import (
+    CONFIRM,
+    interpret_language,
+    language_list_interactive,
+    save_language,
+    take_language_hint,
+)
 from convoplex.llm import LLMError, LiveMuse, MockMuse
 from convoplex.money import naira
 from convoplex.whatsapp_state import WhatsAppStore, store_path, window_open
@@ -569,9 +576,11 @@ def _process_one(
                 "from_masked": mask_phone(message.from_phone),
             },
         )
-        if message.kind == "text":
+        if message.kind in {"text", "interactive"}:
             text = (message.text or "").strip()
             if not text:
+                return
+            if _language_turn(settings, channel, log, store, conn, http, customer_id, text):
                 return
             result = handle_reply(conn, log, llm, customer_id, text, max_tokens=max_tokens)
         elif message.kind == "audio":
@@ -586,6 +595,9 @@ def _process_one(
                 asr_http=asr_http,
                 max_tokens=max_tokens,
             )
+            if interpret_language(text):
+                _language_turn(settings, channel, log, store, conn, http, customer_id, text)
+                return
             if result is None:
                 return
         else:
@@ -595,6 +607,18 @@ def _process_one(
     if channel != "whatsapp":
         return
     seq = _latest_agent_seq(log, customer_id)
+    hint = None
+    try:
+        hint_conn = open_db(settings)
+        try:
+            hint = take_language_hint(hint_conn, customer_id)
+        finally:
+            hint_conn.close()
+    except Exception:
+        hint = None
+    outbound = result.message
+    if hint:
+        outbound = f"{outbound.rstrip()}\n\n{hint}"
     try:
         deliver(
             settings,
@@ -605,10 +629,113 @@ def _process_one(
             customer_id=customer_id,
             message_seq=seq,
             kind="text",
-            text=result.message,
+            text=outbound,
         )
     except SendBlocked as exc:
         _log_failure(settings, log, message, exc)
+
+
+def _language_turn(settings, channel, log, store, conn, http, customer_id: int, text: str) -> bool:
+    """Switch language or send the menu. True when this message was not a shop reply."""
+    choice = interpret_language(text)
+    if choice is None:
+        return False
+    log.append(
+        kind="message",
+        actor="customer",
+        payload={"customer_id": customer_id, "task": "language", "content": text},
+    )
+    if choice["action"] == "menu":
+        confirmation = "Pick a language. You can change it any time by replying with its name."
+        log.append(
+            kind="message",
+            actor="agent",
+            payload={
+                "customer_id": customer_id,
+                "task": "language",
+                "direction": "out",
+                "content": confirmation,
+                "intent": None,
+            },
+        )
+        if channel == "whatsapp":
+            _send_language_menu(settings, channel, log, store, http, customer_id)
+        return True
+    code = save_language(conn, customer_id, choice["language"], channel="whatsapp" if channel == "whatsapp" else "simulator")
+    confirmation = CONFIRM[code]
+    log.append(
+        kind="message",
+        actor="agent",
+        payload={
+            "customer_id": customer_id,
+            "task": "language",
+            "direction": "out",
+            "content": confirmation,
+            "intent": None,
+            "language": code,
+        },
+    )
+    if channel == "whatsapp":
+        try:
+            deliver(
+                settings,
+                channel,
+                log,
+                store,
+                http,
+                customer_id=customer_id,
+                message_seq=None,
+                kind="text",
+                text=confirmation,
+            )
+        except SendBlocked as exc:
+            _log_failure(settings, log, _stub_message(text), exc)
+    return True
+
+
+def _stub_message(text: str):
+    return InboundMessage(
+        message_id="",
+        from_phone="",
+        kind="text",
+        text=text,
+        media_id=None,
+        mime_type=None,
+        timestamp=None,
+    )
+
+
+def _send_language_menu(settings, channel, log, store, http, customer_id: int) -> None:
+    from convoplex.integrations.whatsapp import WhatsAppClient
+
+    moment = now_utc()
+    inbound = store.load().get("last_inbound_at")
+    if not isinstance(inbound, str) or not window_open(inbound, moment):
+        try:
+            deliver(
+                settings,
+                channel,
+                log,
+                store,
+                http,
+                customer_id=customer_id,
+                message_seq=None,
+                kind="text",
+                text="Reply LANGUAGE when the chat is open and I will show the language list.",
+            )
+        except SendBlocked:
+            return
+        return
+    try:
+        client = WhatsAppClient(settings, channel=channel, http=http)
+        client.send_interactive(settings.whatsapp_demo_to, language_list_interactive())
+    except (SendBlocked, WhatsAppError) as exc:
+        _log_failure(
+            settings,
+            log,
+            _stub_message("language"),
+            exc,
+        )
 
 
 def _latest_agent_seq(log: ActionLog, customer_id: int) -> int | None:
@@ -677,9 +804,12 @@ def _audio_reply(
             },
         },
     )
-    if not transcript.text.strip():
+    spoken = transcript.text.strip()
+    if not spoken:
         return "", None
-    result = handle_reply(conn, log, llm, customer_id, transcript.text, max_tokens=max_tokens)
+    if interpret_language(spoken):
+        return spoken, None
+    result = handle_reply(conn, log, llm, customer_id, spoken, max_tokens=max_tokens)
     return transcript.text, result
 
 

@@ -21,6 +21,7 @@ from convoplex.integrations.images import (
     remember_promo,
 )
 from convoplex.integrations.voice import transcribe_audio
+from convoplex.languages import language_label
 from convoplex.llm import LLMError, LiveMuse, MockMuse
 from convoplex.metrics import snapshot
 from convoplex.synthetic.generate import generate, reset_and_seed, seed_if_empty
@@ -303,7 +304,7 @@ def _pick_customer(conn) -> dict:
         and row["favourite_product"]["stock_qty"] > 0
     ]
     if not ranked:
-        raise RuntimeError("No lapsed Pidgin-speaking customer with stock on hand. Regenerate the database.")
+        raise RuntimeError("No lapsed Broken English customer with stock on hand. Regenerate the database.")
     # Equal lapse scores are common at the top of the list. Call the customer
     # who has spent the most, so the offer is the valuable reorder, not an
     # arbitrary id.
@@ -314,7 +315,7 @@ def _pick_customer(conn) -> dict:
 def format_demo(result: DemoResult) -> str:
     reasons = "\n".join(f"  - {reason}" for reason in result.reasons)
     rate = f"{result.win_back_rate:.0%}"
-    spoken = "Pidgin" if result.language == "pcm" else "English"
+    spoken = language_label(result.language)
     lines = [
         "Convoplex Retention Agent",
         SYNTHETIC_LABEL,

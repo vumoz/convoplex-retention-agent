@@ -185,6 +185,12 @@ def parse_inbound(payload: dict) -> list[InboundMessage]:
                     if isinstance(audio, dict):
                         media_id = audio.get("id")
                         mime_type = audio.get("mime_type")
+                elif kind == "interactive":
+                    interactive = message.get("interactive") or {}
+                    if isinstance(interactive, dict):
+                        reply = interactive.get("list_reply") or interactive.get("button_reply") or {}
+                        if isinstance(reply, dict):
+                            text = reply.get("id") or reply.get("title")
                 stamp = message.get("timestamp")
                 found.append(
                     InboundMessage(
@@ -259,6 +265,25 @@ def build_send_template_request(
             "to": to,
             "type": "template",
             "template": {"name": name, "language": {"code": language}},
+        },
+    }
+
+
+def build_send_interactive_request(
+    phone_number_id: str,
+    to: str,
+    interactive: dict,
+    version: str | None = None,
+) -> dict:
+    """JSON body for a session interactive message. This function does not call Graph."""
+    return {
+        "url": messages_url(phone_number_id, version),
+        "json": {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": to,
+            "type": "interactive",
+            "interactive": interactive,
         },
     }
 
@@ -478,6 +503,11 @@ class WhatsAppClient:
         if not wamid:
             raise WhatsAppError("Graph response is missing messages[0].id.")
         return str(wamid)
+
+    def send_interactive(self, to: str, interactive: dict) -> SendResult:
+        dest = self._destination(to)
+        spec = build_send_interactive_request(self._phone_id(), dest, interactive, self._version())
+        return SendResult(**public_wamid(self._post_messages(spec)), to=dest, kind="interactive")
 
     def send_text(self, to: str, body: str) -> SendResult:
         dest = self._destination(to)

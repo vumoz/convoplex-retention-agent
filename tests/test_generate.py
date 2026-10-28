@@ -43,7 +43,16 @@ def test_full_synthetic_book(tmp_path):
     assert len(customers) == 500
     assert {row["city"] for row in customers} == {"Lagos", "Abuja", "Port Harcourt"}
     assert all(row["synthetic"] == 1 for row in customers)
-    assert all(row["language"] in {"en", "pcm"} for row in customers)
+    assert all(row["language"] in {"en", "pcm", "ig", "yo", "ha"} for row in customers)
+    demo = conn.execute("SELECT language, language_opted_in, language_channel FROM customers WHERE id = 184").fetchone()
+    assert demo["language"] == "pcm"
+    assert demo["language_opted_in"] == 1
+    assert demo["language_channel"] == "seed"
+    english = conn.execute(
+        "SELECT language_opted_in FROM customers WHERE language = 'en' LIMIT 1"
+    ).fetchone()
+    assert english["language_opted_in"] == 0
+    assert {row["language"] for row in customers} == {"en", "pcm", "ig", "yo", "ha"}
     names = [row["full_name"] for row in customers]
     assert len(set(names)) == 500
     assert any(name.endswith("Okonkwo") or "Okonkwo" in name for name in names)

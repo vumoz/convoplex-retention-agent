@@ -429,6 +429,14 @@
             <button type="button" data-action="filter" data-filter="at_risk">At risk</button>
             <button type="button" data-action="filter" data-filter="lapsed">Lapsed</button>
           </div>
+          <div class="filters" id="lang-filters">
+            <button type="button" data-action="lang" data-lang="all" class="on">All languages</button>
+            <button type="button" data-action="lang" data-lang="en">English</button>
+            <button type="button" data-action="lang" data-lang="pcm">Broken English</button>
+            <button type="button" data-action="lang" data-lang="ig">Igbo</button>
+            <button type="button" data-action="lang" data-lang="yo">Yoruba</button>
+            <button type="button" data-action="lang" data-lang="ha">Hausa</button>
+          </div>
           <label class="find">
             <span class="sr">Search customers by name or id</span>
             <input id="find" type="search" placeholder="Search name or id" autocomplete="off" />
@@ -480,6 +488,8 @@
       metrics: null,
       actions: {entries: [], count: 0},
       filter: "all",
+      langFilter: "all",
+      admin: false,
       query: "",
       busy: false,
       promoBusy: false,
@@ -563,6 +573,18 @@
       document.getElementById("voice").disabled = locked;
     }
 
+    const LANGUAGE_LABELS = {
+      en: "English",
+      pcm: "Broken English",
+      ig: "Igbo",
+      yo: "Yoruba",
+      ha: "Hausa",
+    };
+
+    function languageLabel(code) {
+      return LANGUAGE_LABELS[code] || "English";
+    }
+
     function renderMetrics() {
       const host = document.getElementById("metrics");
       const m = state.metrics || {};
@@ -585,11 +607,21 @@
         }
         host.append(tile);
       }
+      const breakdown = m.by_language || [];
+      if (breakdown.length) {
+        const line = breakdown
+          .map((row) => `${languageLabel(row.language)} ${row.customers}`)
+          .join(" · ");
+        host.append(el("p", "sub", line));
+      }
     }
 
     function renderFilters() {
       for (const button of document.querySelectorAll("[data-filter]")) {
         button.classList.toggle("on", button.dataset.filter === state.filter);
+      }
+      for (const button of document.querySelectorAll("[data-lang]")) {
+        button.classList.toggle("on", button.dataset.lang === state.langFilter);
       }
     }
 
@@ -606,8 +638,13 @@
       const query = state.query.trim().toLowerCase();
       const demo = state.customers.find((row) => row.id === DEMO_CUSTOMER_ID) || null;
       const segmentRows = state.customers.filter((row) => state.filter === "all" || row.segment === state.filter);
-      const customers = segmentRows.filter((row) => matchesQuery(row, query));
-      const pin = demo && matchesQuery(demo, query) ? demo : null;
+      const languageRows = segmentRows.filter((row) => state.langFilter === "all" || row.language === state.langFilter);
+      const customers = languageRows.filter((row) => matchesQuery(row, query));
+      const pin = demo
+        && matchesQuery(demo, query)
+        && (state.filter === "all" || demo.segment === state.filter)
+        && (state.langFilter === "all" || demo.language === state.langFilter)
+        ? demo : null;
       const groups = new Map(state.retailers.map((shop) => [shop.id, []]));
       for (const customer of customers) {
         if (pin && customer.id === pin.id) continue;
@@ -669,9 +706,22 @@
         return;
       }
       const customer = state.selected;
-      const language = customer.language === "pcm" ? "Pidgin" : "English";
+      const language = languageLabel(customer.language);
       copy.append(el("h2", null, customer.full_name));
       copy.append(el("p", "sub", `${customer.retailer_name} · ${customer.area} · ${language} · ${customer.phone}`));
+      if (state.admin) {
+        const picker = document.createElement("select");
+        picker.id = "language-pick";
+        picker.setAttribute("aria-label", "Customer language");
+        for (const [code, label] of Object.entries(LANGUAGE_LABELS)) {
+          const option = document.createElement("option");
+          option.value = code;
+          option.textContent = label;
+          option.selected = code === customer.language;
+          picker.append(option);
+        }
+        copy.append(picker);
+      }
       if (customer.favourite_product) {
         const stock = customer.favourite_in_stock ? "in stock" : "out of stock";
         copy.append(el("p", "sub", `Usually buys ${customer.favourite_product} (${stock}).`));
@@ -1125,8 +1175,10 @@
         const badge = document.getElementById("admin-state");
         const required = Boolean(session && session.required);
         const admin = Boolean(session && session.admin);
+        state.admin = admin;
         form.hidden = !required || admin;
         badge.hidden = !required || !admin;
+        renderPerson();
       } catch (err) {
         // The shop view still loads when the session check fails.
       }
@@ -1187,6 +1239,10 @@
         state.filter = button.dataset.filter;
         renderFilters();
         renderShops();
+      } else if (action === "lang") {
+        state.langFilter = button.dataset.lang;
+        renderFilters();
+        renderShops();
       } else if (action === "winback") {
         sendWinback();
       } else if (action === "wa-winback") {
@@ -1222,6 +1278,24 @@
         document.getElementById("admin-token").value = "";
         setError("");
         return refreshAdmin();
+      }).catch((err) => setError(err.message));
+    });
+
+    document.getElementById("person").addEventListener("change", (event) => {
+      const picker = event.target.closest("#language-pick");
+      if (!picker || !state.selected) return;
+      const language = picker.value;
+      api(`/v1/customers/${state.selected.id}/language`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({language}),
+      }).then((customer) => {
+        rememberCustomer(customer);
+        if (state.selected && state.selected.id === customer.id) {
+          state.selected = Object.assign({}, state.selected, customer);
+        }
+        renderPerson();
+        renderShops();
       }).catch((err) => setError(err.message));
     });
 

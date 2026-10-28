@@ -23,18 +23,27 @@ def payday_calendar(as_of: date) -> dict:
         status = "passed"
         pcm = "Salary don land for many people, e good time to stock up."
         en = "Salary has landed for many people, a good time to restock."
+        ig = "Ụgwọ ọnwa abatala n'aka ọtụtụ mmadụ. Oge ọ dị mma iji zụta ihe."
+        yo = "Owó oṣù ti wọlé fún ọ̀pọ̀ ènìyàn. Àkókò tó dára láti ra ohun tí a nílò."
+        ha = "Albashi ya shiga hannun mutane da yawa. Lokaci ne mai kyau a sayi kaya."
     elif as_of.day >= 25:
         status = "open"
         pcm = "Month-end dey this week, e good time to stock up."
         en = "Month-end is this week, a good time to restock."
+        ig = "Ọgwụgwụ ọnwa dị n'izu a. Oge ọ dị mma iji zụta ihe."
+        yo = "Òpin oṣù wà nínú ọ̀sẹ̀ yìí. Àkókò tó dára láti ra ohun tí a nílò."
+        ha = "Ƙarshen wata yana wannan makon. Lokaci ne mai kyau a sayi kaya."
     else:
         status = "upcoming"
         pcm = "Payday still dey come, e good time to plan am."
         en = "Payday is still coming, a good time to plan ahead."
+        ig = "Ụbọchị ụgwọ ka na-abịa. Oge ọ dị mma iji mee atụmatụ."
+        yo = "Ọjọ́ owó oṣù ń bọ̀. Àkókò tó dára láti pète."
+        ha = "Ranar albashi tana zuwa. Lokaci ne mai kyau a shirya."
     return {
         "today": today,
         "status": status,
-        "customer_line": {"pcm": pcm, "en": en},
+        "customer_line": {"pcm": pcm, "en": en, "ig": ig, "yo": yo, "ha": ha},
         "instruction": (
             f"Today is {today}. status is context only. Never write the status value in the message. "
             "The first win-back uses exactly one seasonal hook. Write payday.customer_line for the "
@@ -160,6 +169,7 @@ def _customer_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return conn.execute(
         """
         SELECT c.id, c.full_name, c.phone, c.city, c.area, c.language, c.archetype,
+               c.language_opted_in, c.language_opted_in_at, c.language_channel, c.language_hint_sent,
                c.retailer_id, r.name AS retailer_name, r.city AS retailer_city,
                r.area AS retailer_area, r.category_focus
         FROM customers c
@@ -196,6 +206,10 @@ def _base_record(row, scored: LapseScore, favourite: dict | None, payday: bool, 
         "city": row["city"],
         "area": row["area"],
         "language": row["language"],
+        "language_opted_in": int(row["language_opted_in"] or 0),
+        "language_opted_in_at": row["language_opted_in_at"],
+        "language_channel": row["language_channel"],
+        "language_hint_sent": int(row["language_hint_sent"] or 0),
         "synthetic_archetype": row["archetype"],
         "retailer_id": int(row["retailer_id"]),
         "retailer_name": row["retailer_name"],
@@ -286,8 +300,10 @@ def agent_context(
     profile = get_customer(conn, customer_id)
     if profile is None:
         return None
-    if language is not None and language not in {"en", "pcm"}:
-        raise ValueError("language must be 'en' or 'pcm'")
+    from convoplex.languages import LANGUAGES
+
+    if language is not None and language not in LANGUAGES:
+        raise ValueError("language must be one of en, pcm, ig, yo, or ha")
     favourite = profile["favourite_product"]
     as_of = date.fromisoformat(profile["as_of"])
     spoken = language or profile["language"]
