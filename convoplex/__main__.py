@@ -27,8 +27,8 @@ def main(argv: list[str] | None = None) -> int:
     demo_cmd.add_argument("--live", action="store_true", help="Call Muse Spark (requires META_API_KEY)")
     demo_cmd.add_argument("--mock", action="store_true", help="Force the deterministic mock")
     demo_cmd.add_argument("--reset", action="store_true", help="Regenerate the synthetic database first")
-    demo_cmd.add_argument("--customer", type=int, default=None, help="Customer id. Default picks a lapsed Pidgin regular.")
-    demo_cmd.add_argument("--lang", choices=("en", "pcm"), default=None, help="Override the spoken language for this run.")
+    demo_cmd.add_argument("--customer", type=int, default=None, help="Customer id. Default picks a lapsed Broken English regular.")
+    demo_cmd.add_argument("--lang", choices=("en", "pcm", "ig", "yo", "ha"), default=None, help="Override the spoken language for this run.")
     demo_cmd.add_argument(
         "--reply",
         action="append",
@@ -61,7 +61,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Send the win-back for a synthetic customer on the demo phone",
     )
     winback_cmd.add_argument("--customer", type=int, required=True, help="Synthetic customer id")
-    winback_cmd.add_argument("--lang", choices=("en", "pcm"), default=None, help="Language for a new win-back draft")
+    winback_cmd.add_argument(
+        "--lang",
+        choices=("en", "pcm", "ig", "yo", "ha"),
+        default=None,
+        help="Language for a new win-back draft",
+    )
     winback_cmd.add_argument(
         "--promo-card",
         action="store_true",

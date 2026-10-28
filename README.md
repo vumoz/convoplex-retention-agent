@@ -8,14 +8,14 @@ All application code in this repository was written during the event. The datase
 
 ## What it does
 
-A shop in Lagos, Abuja, or Port Harcourt quietly loses regulars. Convoplex scores who has gone quiet, explains why, and drafts a personal message in English or Nigerian Pidgin with a real naira price from the shelf. If the customer accepts, the agent places the order and decrements stock.
+A shop in Lagos, Abuja, or Port Harcourt quietly loses regulars. Convoplex scores who has gone quiet, explains why, and drafts a personal message in English or Broken English (Nigerian Pidgin) with a real naira price from the shelf. If the customer accepts, the agent places the order and decrements stock.
 
 This build is the core, end to end, on synthetic data:
 
 - 500 fictional customers across six shops, with orders from 27 Apr 2026 to 26 Oct 2026. Scores use a scenario date of 27 Oct 2026 so the demo does not drift after the event.
 - RFM-style lapse scoring with a written reason for every customer.
 - A Muse Spark tool loop: `check_stock`, `get_price`, `create_offer`, `place_order`, and `get_delivery_options` (synthetic pickup and a 1–2 day same-city window). The model is told not to invent a delivery weekday.
-- The payday state stays in context. The first win-back writes one natural sentence in the customer's language (on 27 Oct, Pidgin "Month-end dey this week, e good time to stock up."). The raw state is not pasted into the message. A decline does not mention payday. Festive notes are included when they apply.
+- The payday state stays in context. The first win-back writes one natural sentence in the customer's language (on 27 Oct, Broken English "Month-end dey this week, e good time to stock up."). The raw state is not pasted into the message. A decline does not mention payday. Festive notes are included when they apply.
 - An append-only hash-chained action log, with a verify command.
 - A FastAPI backend for the at-risk list, win-back, replies, metrics, and the log.
 - Voice-note replies. OGG/Opus is converted to mono 16-bit WAV, transcribed, and fed through the same decline / price question / accept path as a typed reply. The action log stores the transcript, latency, and model.
@@ -96,7 +96,7 @@ python -m convoplex serve --channel whatsapp --tunnel
 
 `serve` is the dashboard. Open `http://127.0.0.1:8000/`. The page lists at-risk and lapsed customers by shop, with the written lapse reason. Send a win-back, reply in the box, or upload an OGG or WAV voice note. Generate the promo card for the offer. Metrics and the action log sit on the same page. **Verify chain** reports pass or fail. **Reset demo** asks once to confirm, then rebuilds the synthetic database, deletes the action log, and removes promo cards. Offer ids start again at 1, so old cards are cleared with the database.
 
-`demo` leaves an existing database in place and appends to the action log. `demo --reset` and `generate` write a fresh database and delete the action log, because the old chain would describe a database that no longer exists. With no extra flags the demo picks a lapsed customer who prefers Pidgin, drafts an offer, accepts it with "Yes o, no wahala. Abeg send am today.", places the order, and verifies the action log.
+`demo` leaves an existing database in place and appends to the action log. `demo --reset` and `generate` write a fresh database and delete the action log, because the old chain would describe a database that no longer exists. With no extra flags the demo picks a lapsed customer who prefers Broken English (Nigerian Pidgin), drafts an offer, accepts it with "Yes o, no wahala. Abeg send am today.", places the order, and verifies the action log.
 
 A declined offer stays valid while the product is in stock. A later question quotes the offer price, and a later accept charges that price even if the model omits `offer_id`. Once that offer is accepted it counts as accepted: `offers_declined` only includes offers that are still declined. Follow-up replies do not greet again. The agent reuses stock and price results already in the thread. On acceptance it calls `get_delivery_options` before `place_order`, and the confirmation offers pickup or delivery.
 
@@ -263,6 +263,16 @@ On the dashboard, **Simulator / WhatsApp live** shows whether env is missing, wh
 
 Tests never call Graph. They use a fake transport. `pytest` covers request shapes, the allow-list, signature checks, dedupe, the 24-hour window, and inbound text and audio.
 
+## Languages
+
+English (`en`) is the default for a customer who has not chosen. The other options are opt-in: Broken English (`pcm`; Nigerian Pidgin), Igbo (`ig`), Yoruba (`yo`), and Hausa (`ha`). The dashboard and any message the customer sees call `pcm` Broken English. This README says Broken English (Nigerian Pidgin) so the code and the local name are both clear.
+
+The preference is stored on the customer row: `language`, `language_opted_in`, `language_opted_in_at`, and `language_channel` (`seed`, `whatsapp`, or `dashboard`). A migration adds those columns on an existing SQLite file or on Neon and widens the check constraint. Seeded customers who are not English are stored as an explicit opt-in. Customer 184, the live WhatsApp demo customer, stays on Broken English.
+
+On WhatsApp, a customer can reply `language`, `lang`, `change language`, or the language name (English or the local name, with or without diacritics, any case). A name switches immediately and the confirmation is in the new language. `language` sends an interactive list inside the 24-hour window. Outside that window the existing `hello_world` template is still the only outbound message. The first WhatsApp reply to a customer who is still on default English adds one line about how to change language, and that line is not repeated.
+
+Prices stay in ₦. Product names stay as they are in the catalogue. The model is told not to mix languages unless the customer already did.
+
 ## Deploy to Vercel
 
 The public app is one Vercel Python function. `app.py` exports `app = create_app()`. `vercel.json` turns on Fluid Compute and sets `maxDuration` to 300 seconds so a Hobby deployment stays inside the platform maximum. That budget covers a cold start that seeds the synthetic book, plus a Muse image or voice call.
@@ -282,7 +292,9 @@ Promo cards are stored in Postgres (`promo_cards.image`), not on the function di
 
 `/healthz` returns 200, or 503 when `DATABASE_URL` is set and the database does not answer. `/health` is the fuller dashboard check. Responses send `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`, and a Content-Security-Policy that allows the dashboard's inline script. Request bodies over 20 MB are rejected with 413. Access logs are one JSON line per request (method, path, status) and omit query strings, so `hub.verify_token` is not logged.
 
-When `ADMIN_TOKEN` is set, these routes require it via `Authorization: Bearer`, `X-Admin-Token`, or the dashboard **Unlock** form (httponly cookie): reset demo, channel switch, WhatsApp sends, and the demo-customer mapping. The public page stays readable. Win-back, reply, voice, and promo-card are the try-it path: `TRY_IP_LIMIT` requests per IP per `TRY_WINDOW_SECONDS` (default 60 per 3600 seconds). Live Meta chat, image, and transcription calls share `META_DAILY_CAP` (default 80 per UTC day). Past the cap, chat and voice fall back to the mock. A promo card past the cap returns 429 unless the caller is the admin, who bypasses the cap. The webhook is not rate-limited and does not require the admin token. It still requires a valid `X-Hub-Signature-256` when the channel is WhatsApp live. Leave `ADMIN_TOKEN` unset on your laptop: the local API stays open, which is what the tests expect.
+Promo cards draw with DejaVu Sans bundled in `convoplex/fonts` (DejaVuSans.ttf and DejaVuSans-Bold.ttf, plus the Bitstream Vera license). `vercel.json` lists that directory in `includeFiles` because the Vercel function image has no system fonts. The loader uses the package path first and a system DejaVu install only if the bundle is missing. The face covers ₦ and the Latin letters used for Igbo, Yoruba, and Hausa (ọ, ẹ, ṣ, ụ, ị, ń, ɓ, ɗ, ƙ, ƴ).
+
+When `ADMIN_TOKEN` is set, these routes require it via `Authorization: Bearer`, `X-Admin-Token`, or the dashboard **Unlock** form (httponly cookie): reset demo, channel switch, WhatsApp sends, the demo-customer mapping, and a customer's language. The public page stays readable. Win-back, reply, voice, and promo-card are the try-it path: `TRY_IP_LIMIT` requests per IP per `TRY_WINDOW_SECONDS` (default 60 per 3600 seconds). Live Meta chat, image, and transcription calls share `META_DAILY_CAP` (default 80 per UTC day). Past the cap, chat and voice fall back to the mock. A promo card past the cap returns 429 unless the caller is the admin, who bypasses the cap. The webhook is not rate-limited and does not require the admin token. It still requires a valid `X-Hub-Signature-256` when the channel is WhatsApp live. Leave `ADMIN_TOKEN` unset on your laptop: the local API stays open, which is what the tests expect.
 
 In the Vercel project, set the secrets in the dashboard (not in git):
 

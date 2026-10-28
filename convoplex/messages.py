@@ -39,6 +39,13 @@ def _first(full_name: str) -> str:
     return full_name.split()[0]
 
 
+def _code(ctx: dict) -> str:
+    language = str(ctx.get("language") or "en")
+    if language not in {"en", "pcm", "ig", "yo", "ha"}:
+        return "en"
+    return language
+
+
 def _payday_note(ctx: dict) -> str:
     """The one seasonal hook the template is allowed to add.
 
@@ -46,8 +53,8 @@ def _payday_note(ctx: dict) -> str:
     append them as well, so a win-back never carries two hooks.
     """
     lines = (ctx.get("payday") or {}).get("customer_line") or {}
-    language = "pcm" if ctx.get("language") == "pcm" else "en"
-    sentence = lines.get(language)
+    language = _code(ctx)
+    sentence = lines.get(language) or lines.get("en")
     if sentence:
         return f" {sentence}"
     return ""
@@ -106,8 +113,15 @@ def delivery_fee_sentence(ctx: dict, delivery: dict | None) -> str:
     if fee is None:
         return ""
     amount = naira(fee)
-    if ctx.get("language") == "pcm":
+    code = _code(ctx)
+    if code == "pcm":
         return f"Delivery fee na {amount}."
+    if code == "ig":
+        return f"Ụgwọ nnyefe bụ {amount}."
+    if code == "yo":
+        return f"Owó ìfiránṣẹ́ jẹ́ {amount}."
+    if code == "ha":
+        return f"Kuɗin kai shi ne {amount}."
     return f"The delivery fee is {amount}."
 
 
@@ -122,17 +136,23 @@ def _fee_line_language(sentence: str) -> str | None:
         return "en"
     if re.match(r"^delivery fee na\b", low):
         return "pcm"
+    if low.startswith("ụgwọ nnyefe"):
+        return "ig"
+    if low.startswith("owó ìfiránṣẹ́") or low.startswith("owo ifiranse"):
+        return "yo"
+    if low.startswith("kuɗin kai") or low.startswith("kudin kai"):
+        return "ha"
     return None
 
 
 def _drop_other_language_fee_lines(text: str, ctx: dict) -> str:
     """Keep fee announcements in the customer's language only."""
-    pidgin = ctx.get("language") == "pcm"
+    spoken = _code(ctx)
     kept: list[str] = []
     seen_fee = False
     for sentence in _split_sentences(text):
         kind = _fee_line_language(sentence)
-        if kind == ("en" if pidgin else "pcm"):
+        if kind is not None and kind != spoken:
             continue
         if kind is not None:
             if seen_fee:
@@ -204,10 +224,26 @@ def delivery_confirmation(ctx: dict, delivery: dict | None, *, include_fee: bool
     window = rider.get("window") or "1 to 2 days"
     where = rider.get("where") or "your area"
     fee = delivery_fee_ngn(delivery)
-    if ctx.get("language") == "pcm":
+    code = _code(ctx)
+    if code == "pcm":
         line = f"We go deliver am ({window} for {where})."
         if include_fee and fee is not None:
             return f"{line} Delivery fee na {naira(fee)}."
+        return line
+    if code == "ig":
+        line = f"Anyị ga-ebuga ya ({window} na {where})."
+        if include_fee and fee is not None:
+            return f"{line} Ụgwọ nnyefe bụ {naira(fee)}."
+        return line
+    if code == "yo":
+        line = f"A óò gbé e lọ ({window} ní {where})."
+        if include_fee and fee is not None:
+            return f"{line} Owó ìfiránṣẹ́ jẹ́ {naira(fee)}."
+        return line
+    if code == "ha":
+        line = f"Za mu kai shi ({window} a {where})."
+        if include_fee and fee is not None:
+            return f"{line} Kuɗin kai shi ne {naira(fee)}."
         return line
     line = f"We will deliver it ({window} in {where})."
     if include_fee and fee is not None:
@@ -248,10 +284,29 @@ def delivery_sentence(ctx: dict, delivery: dict | None) -> str:
     options = (delivery or {}).get("options") or []
     pickup = next((item for item in options if item.get("method") == "pickup"), None)
     rider = next((item for item in options if item.get("method") == "delivery"), None)
-    pidgin = ctx.get("language") == "pcm"
+    code = _code(ctx)
+    pidgin = code == "pcm"
     fee = delivery_fee_ngn(delivery)
     fee_text = naira(fee) if fee is not None else None
     if pickup and pickup.get("available") and rider and rider.get("available"):
+        if code == "ig":
+            paid = f", ụgwọ nnyefe {fee_text}" if fee_text else ""
+            return (
+                f"Ị nwere ike ịhọrọ iburu ({pickup.get('window')} na {pickup.get('where')}) "
+                f"ma ọ bụ nnyefe ({rider.get('window')} na {rider.get('where')}{paid})."
+            )
+        if code == "yo":
+            paid = f", owó ìfiránṣẹ́ {fee_text}" if fee_text else ""
+            return (
+                f"O lè yan ìgbé ({pickup.get('window')} ní {pickup.get('where')}) "
+                f"tàbí ìfiránṣẹ́ ({rider.get('window')} ní {rider.get('where')}{paid})."
+            )
+        if code == "ha":
+            paid = f", kuɗin kai {fee_text}" if fee_text else ""
+            return (
+                f"Za ka iya zaɓar ɗauka ({pickup.get('window')} a {pickup.get('where')}) "
+                f"ko kai ({rider.get('window')} a {rider.get('where')}{paid})."
+            )
         if pidgin:
             paid = f", delivery fee na {fee_text}" if fee_text else ""
             return (
@@ -264,6 +319,21 @@ def delivery_sentence(ctx: dict, delivery: dict | None) -> str:
             f"or delivery ({rider.get('window')} in {rider.get('where')}{paid})."
         )
     if pickup and pickup.get("available") and rider and not rider.get("available"):
+        if code == "ig":
+            return (
+                f"Iburu bụ {pickup.get('window')} na {pickup.get('where')}. "
+                "Nnyefe adịghị na mpụga obodo ụlọ ahịa."
+            )
+        if code == "yo":
+            return (
+                f"Ìgbé jẹ́ {pickup.get('window')} ní {pickup.get('where')}. "
+                "Ìfiránṣẹ́ kò sí ní ìta ìlú ṣọ́ọ̀bù."
+            )
+        if code == "ha":
+            return (
+                f"Ɗauka ita ce {pickup.get('window')} a {pickup.get('where')}. "
+                "Kai ba ya nan a wajen garin shago."
+            )
         if pidgin:
             return (
                 f"Pickup na {pickup.get('window')} for {pickup.get('where')}. "
@@ -273,6 +343,12 @@ def delivery_sentence(ctx: dict, delivery: dict | None) -> str:
             f"Pickup is {pickup.get('window')} at {pickup.get('where')}. "
             "Delivery is not available outside the shop city."
         )
+    if code == "ig":
+        return "Iburu dị n'ụlọ ahịa. Gwa anyị ma ịchọrọ nnyefe."
+    if code == "yo":
+        return "Ìgbé wà ní ṣọ́ọ̀bù. Sọ fún wa tí o bá fẹ́ ìfiránṣẹ́."
+    if code == "ha":
+        return "Ɗauka tana nan a shago. Faɗa mana idan kana son kai."
     if pidgin:
         return "Pickup dey for the shop. Tell us if you want delivery."
     return "Pickup is at the shop. Tell us if you want delivery."
@@ -288,7 +364,38 @@ def winback_message(ctx: dict, offer: dict) -> str:
     area = ctx.get("retailer_area") or ctx["area"]
     discount = offer["discount_percent"]
     note = _payday_note(ctx)
-    if ctx.get("language") == "pcm":
+    code = _code(ctx)
+    if code == "ig":
+        quiet = f"Ụbọchị {days} gafeworo kemgbe ihe ikpeazụ ị zụtara. " if days is not None else ""
+        return (
+            f"{first}, kedu? Ọ bụ {shop} na {area}. "
+            f"{quiet}"
+            f"{product} ka dị. "
+            f"Enwere m ike inye gị {discount}% mbelata: {price} kama {was}."
+            f"{note} "
+            f"Zaghachi EE ka anyị chekwaara gị ya."
+        )
+    if code == "yo":
+        quiet = f"Ọjọ́ {days} lọ ti o ti ra ohun kẹ́yìn. " if days is not None else ""
+        return (
+            f"{first}, báwo ni? {shop} ní {area} ni èyí. "
+            f"{quiet}"
+            f"{product} wà. "
+            f"A lè fún ọ ní {discount}% ẹdinwo: {price} dípò {was}."
+            f"{note} "
+            f"Dáhùn BẸ́Ẹ̀NI kí a fi pamọ́ fún ọ."
+        )
+    if code == "ha":
+        quiet = f"Kwanaki {days} sun wuce tun sayayyarka ta ƙarshe. " if days is not None else ""
+        return (
+            f"{first}, sannu? {shop} a {area} ne. "
+            f"{quiet}"
+            f"{product} yana nan. "
+            f"Zan iya ba ka {discount}% ragiya: {price} maimakon {was}."
+            f"{note} "
+            f"Amsa EE mu ajiye maka ka."
+        )
+    if code == "pcm":
         quiet = f"You never buy from us for {days} days. " if days is not None else ""
         return (
             f"{first}, how you dey? Na {shop} for {area}. "
@@ -312,10 +419,26 @@ def winback_message(ctx: dict, offer: dict) -> str:
 def out_of_stock_message(ctx: dict, product_name: str) -> str:
     first = _first(ctx["full_name"])
     shop = ctx["retailer_name"]
-    if ctx.get("language") == "pcm":
+    code = _code(ctx)
+    if code == "pcm":
         return (
             f"{first}, na {shop}. We wan bring you back, but {product_name} no dey for shop right now. "
             f"We go ping you once e land."
+        )
+    if code == "ig":
+        return (
+            f"{first}, ọ bụ {shop}. Anyị chọrọ ịkpọghachi gị, mana {product_name} adịghị n'ụlọ ahịa ugbu a. "
+            f"Anyị ga-agwa gị mgbe ọ bịara."
+        )
+    if code == "yo":
+        return (
+            f"{first}, {shop} ni èyí. A fẹ́ kí o padà, ṣùgbọ́n {product_name} kò sí ní ṣọ́ọ̀bù báyìí. "
+            f"A óò sọ fún ọ nígbà tó bá dé."
+        )
+    if code == "ha":
+        return (
+            f"{first}, {shop} ne. Muna son ka dawo, amma {product_name} babu a shago yanzu. "
+            f"Za mu gaya maka idan ya iso."
         )
     return (
         f"Hello {first}, this is {shop}. We wanted to welcome you back, but {product_name} is out of stock right now. "
@@ -329,7 +452,23 @@ def accept_message(ctx: dict, order: dict, delivery: dict | None = None) -> str:
     product = order["product_name"]
     qty = order["qty"]
     arrival = delivery_sentence(ctx, delivery)
-    if ctx.get("language") == "pcm":
+    code = _code(ctx)
+    if code == "ig":
+        return (
+            f"E meela, {first}. Anyị echekwala {qty} x {product} maka gị. "
+            f"Mkpọkọta bụ {total}. {arrival}"
+        )
+    if code == "yo":
+        return (
+            f"Ó ti ṣe, {first}. A ti fi {qty} x {product} pamọ́ fún ọ. "
+            f"Àpapọ̀ jẹ́ {total}. {arrival}"
+        )
+    if code == "ha":
+        return (
+            f"An gama, {first}. Mun ajiye {qty} x {product} maka ka. "
+            f"Jimla ita ce {total}. {arrival}"
+        )
+    if code == "pcm":
         return (
             f"E don set, {first}. We don reserve {qty} x {product} for you. "
             f"Total na {total}. {arrival}"
@@ -343,8 +482,15 @@ def accept_message(ctx: dict, order: dict, delivery: dict | None = None) -> str:
 def decline_message(ctx: dict) -> str:
     first = _first(ctx["full_name"])
     area = ctx.get("retailer_area") or ctx["area"]
-    if ctx.get("language") == "pcm":
+    code = _code(ctx)
+    if code == "pcm":
         return f"No wahala, {first}. Whenever you ready, we dey for {area}. Thank you."
+    if code == "ig":
+        return f"Ọ dị mma, {first}. Mgbe ị dị njikere, anyị nọ na {area}. Daalụ."
+    if code == "yo":
+        return f"Kò sí wàhálà, {first}. Nígbà tí o bá ṣetán, a wà ní {area}. O ṣeun."
+    if code == "ha":
+        return f"Babu matsala, {first}. Idan ka shirya, muna nan a {area}. Na gode."
     return (
         f"No problem, {first}. We will be here in {area} whenever you are ready. Thank you."
     )
@@ -362,7 +508,23 @@ def question_message(ctx: dict, product_name: str, price_ngn: int | None, stock_
             stock_qty = offer["stock_qty"]
     price = naira(price_ngn) if price_ngn is not None else "the shelf price"
     stock = stock_qty if stock_qty is not None else "some"
-    if ctx.get("language") == "pcm":
+    code = _code(ctx)
+    if code == "ig":
+        return (
+            f"{first}, {product_name} bụ {price} ugbu a, anyị nwere {stock} n'ụlọ ahịa. "
+            f"Ị chọrọ ka anyị chekwaara gị otu?"
+        )
+    if code == "yo":
+        return (
+            f"{first}, {product_name} jẹ́ {price} báyìí, a sì ní {stock} ní ṣọ́ọ̀bù. "
+            f"Ṣé kí a fi ọ̀kan pamọ́ fún ọ?"
+        )
+    if code == "ha":
+        return (
+            f"{first}, {product_name} shi ne {price} yanzu, muna da {stock} a shago. "
+            f"Kana son mu ajiye ɗaya?"
+        )
+    if code == "pcm":
         return (
             f"{first}, {product_name} na {price} now, and we get {stock} for shop. "
             f"You wan make we keep one?"

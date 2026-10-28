@@ -459,10 +459,26 @@ class MockMuse:
                 text = f"We could not place that order: {order.get('error', 'please try again.')}"
             return Completion(content=f"{text}\nINTENT: accept", finish_reason="stop")
         if intent == "accept" and not offer:
-            if context.get("language") == "pcm":
+            code = context.get("language") or "en"
+            if code == "pcm":
                 text = (
                     f"{_first(context['full_name'])}, we never get open offer to confirm yet. "
                     "Tell us wetin you want, make we check the shop."
+                )
+            elif code == "ig":
+                text = (
+                    f"{_first(context['full_name'])}, onweghị onyinye mepere emepe iji kwenye ugbu a. "
+                    "Gwa anyị ihe ị chọrọ, ka anyị lelee ụlọ ahịa."
+                )
+            elif code == "yo":
+                text = (
+                    f"{_first(context['full_name'])}, kò sí ìfilọ̀ ṣíṣí tí a lè jẹ́rìí sí báyìí. "
+                    "Sọ ohun tí o fẹ́, kí a wo ṣọ́ọ̀bù."
+                )
+            elif code == "ha":
+                text = (
+                    f"{_first(context['full_name'])}, babu tayin da ke buɗe da za mu tabbatar yanzu. "
+                    "Faɗa mana abin da kake so, mu duba shago."
                 )
             else:
                 text = (

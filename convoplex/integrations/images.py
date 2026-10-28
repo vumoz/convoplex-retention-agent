@@ -31,6 +31,16 @@ _DEFAULT_PALETTE = _PALETTES["provisions"]
 
 _BOLD: Path | None = None
 _REGULAR: Path | None = None
+_BUNDLED_FONTS = Path(__file__).resolve().parent.parent / "fonts"
+_FONT_FILES = {
+    True: "DejaVuSans-Bold.ttf",
+    False: "DejaVuSans.ttf",
+}
+
+
+def _bundled_font(name: str) -> Path | None:
+    path = _BUNDLED_FONTS / name
+    return path if path.is_file() else None
 
 
 def _find_font(names: tuple[str, ...]) -> Path | None:
@@ -46,11 +56,16 @@ def _find_font(names: tuple[str, ...]) -> Path | None:
 
 
 def _fonts() -> tuple[Path | None, Path | None]:
+    """Bundled DejaVu first, then a system install. Vercel has no system fonts."""
     global _BOLD, _REGULAR
     if _BOLD is None:
-        _BOLD = _find_font(("DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf", "FreeSansBold.ttf"))
+        _BOLD = _bundled_font(_FONT_FILES[True]) or _find_font(
+            ("DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf", "FreeSansBold.ttf")
+        )
     if _REGULAR is None:
-        _REGULAR = _find_font(("DejaVuSans.ttf", "LiberationSans-Regular.ttf", "FreeSans.ttf"))
+        _REGULAR = _bundled_font(_FONT_FILES[False]) or _find_font(
+            ("DejaVuSans.ttf", "LiberationSans-Regular.ttf", "FreeSans.ttf")
+        )
     return _BOLD, _REGULAR
 
 
@@ -111,7 +126,7 @@ def load_offer_for_card(conn, offer_id: int) -> dict | None:
     row = conn.execute(
         """
         SELECT o.id, o.offer_price_ngn, o.list_price_ngn, o.discount_percent,
-               o.customer_id, p.name AS product_name, p.category,
+               o.customer_id, o.language, p.name AS product_name, p.category,
                r.name AS retailer_name, r.city
         FROM offers o
         JOIN products p ON p.id = o.product_id
@@ -132,19 +147,39 @@ def load_offer_for_card(conn, offer_id: int) -> dict | None:
         "category": row["category"],
         "retailer_name": row["retailer_name"],
         "city": row["city"],
+        "language": row["language"],
     }
 
 
+_OVERLAY_OFF = {
+    "en": "OFF",
+    "pcm": "OFF",
+    "ig": "mbelata",
+    "yo": "ẹdinwo",
+    "ha": "ragiya",
+}
+_OVERLAY_CTA = {
+    "en": "Reply YES on WhatsApp",
+    "pcm": "Reply YES on WhatsApp",
+    "ig": "Zaghachi EE na WhatsApp",
+    "yo": "Dáhùn BẸ́Ẹ̀NI lórí WhatsApp",
+    "ha": "Amsa EE a WhatsApp",
+}
+
+
 def overlay_copy(offer: dict) -> dict:
-    """Exact strings painted onto the card. These come from the offer row."""
+    """Exact strings painted onto the card. Prices and the product name stay as stored."""
+    language = str(offer.get("language") or "en")
+    if language not in _OVERLAY_OFF:
+        language = "en"
     return {
         "shop": offer["retailer_name"],
         "city": offer["city"],
         "product": offer["product_name"],
         "price": naira(offer["offer_price_ngn"]),
         "was": naira(offer["list_price_ngn"]),
-        "off": f"{int(offer['discount_percent'])}% OFF",
-        "cta": "Reply YES on WhatsApp",
+        "off": f"{int(offer['discount_percent'])}% {_OVERLAY_OFF[language]}",
+        "cta": _OVERLAY_CTA[language],
     }
 
 

@@ -2,7 +2,8 @@
   "fluid": true,
   "functions": {
     "app.py": {
-      "maxDuration": 300
+      "maxDuration": 300,
+      "includeFiles": "convoplex/fonts/**"
     }
   }
 }

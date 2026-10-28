@@ -33,7 +33,7 @@ convoplex = "convoplex.__main__:main"
 packages = ["convoplex", "convoplex.integrations", "convoplex.synthetic"]
 
 [tool.setuptools.package-data]
-convoplex = ["static/*.html"]
+convoplex = ["static/*.html", "fonts/*.ttf", "fonts/LICENSE"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -109,6 +109,7 @@ def populate(
     seed: int = DEFAULT_SEED,
 ) -> None:
     rng = random.Random(seed)
+    lang_rng = random.Random(seed + 17)
     plan = archetype_plan(n_customers)
     rng.shuffle(plan)
 
@@ -183,14 +184,28 @@ def populate(
             full_name = _unique_name(rng, used_names)
             phone = _unique_phone(rng, used_phones)
             area = rng.choice(AREAS[retailer["city"]])
-            language = "pcm" if rng.random() < 0.45 else "en"
+            rng.random()  # keep the historical draw so names and orders stay put
+            language = "pcm" if index == 183 else _seed_language(lang_rng)
+            opted = language != "en"
             customer = conn.execute(
                 """
                 INSERT INTO customers (
-                    retailer_id, full_name, phone, city, area, language, archetype
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    retailer_id, full_name, phone, city, area, language, archetype,
+                    language_opted_in, language_opted_in_at, language_channel
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (retailer_id, full_name, phone, retailer["city"], area, language, archetype),
+                (
+                    retailer_id,
+                    full_name,
+                    phone,
+                    retailer["city"],
+                    area,
+                    language,
+                    archetype,
+                    1 if opted else 0,
+                    SCENARIO_AS_OF.isoformat() if opted else None,
+                    "seed" if opted else None,
+                ),
             )
             customer_id = int(customer.lastrowid)
             favourite = rng.choice(cores[retailer_id])
@@ -226,6 +241,20 @@ def populate(
                         for item, qty in items
                     ],
                 )
+
+
+def _seed_language(rng: random.Random) -> str:
+    """English is the largest group. Any other code is stored as an opt-in."""
+    roll = rng.randrange(100)
+    if roll < 50:
+        return "en"
+    if roll < 78:
+        return "pcm"
+    if roll < 86:
+        return "ig"
+    if roll < 95:
+        return "yo"
+    return "ha"
 
 
 def _qty(product: dict, roll: int) -> int:
