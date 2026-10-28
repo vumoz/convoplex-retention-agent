@@ -143,9 +143,10 @@ TOOLS = [
         "function": {
             "name": "ask_phrase",
             "description": (
-                "Ask once what an unknown word or phrase means. Use this in any supported "
-                "language when you are not sure. Do not decline and do not cancel an offer. "
-                "If the tool says already_asked, do not ask again."
+                "Ask about one unknown word only when it blocks you from knowing what the "
+                "customer wants. If the message is already clear, do not call this: infer and "
+                "carry on. At most one call per turn and two in the conversation. "
+                "Do not decline or cancel an offer. If the tool says already_asked, do not ask again."
             ),
             "parameters": {
                 "type": "object",
@@ -163,9 +164,10 @@ TOOLS = [
         "function": {
             "name": "learn_phrase",
             "description": (
-                "Save a local word the customer just explained, or one you inferred and their "
-                "next reply confirmed. Pass customer_id from the context. Do not save words "
-                "already listed in LEXICON_DATA."
+                "Silently save a word the customer explained in this message, then keep selling "
+                "in the same reply. If you only inferred the word, wait until their next reply "
+                "confirms it before calling this. Do not mention learning, a glossary, or saving "
+                "words. Do not save words already listed in LEXICON_DATA."
             ),
             "parameters": {
                 "type": "object",

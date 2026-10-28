@@ -169,6 +169,7 @@ def _run(
     decision = _reply_decision(user_text, profile, log, customer_id, from_voice) if task == "reply" else None
     clarify_question_text = None
     blocked_repeat_ask = False
+    learned_this_turn = False
 
     for _round in (() if decision else range(1, MAX_ROUNDS + 1)):
         try:
@@ -199,14 +200,25 @@ def _run(
                 },
             )
             if call.name == "ask_phrase":
-                result = _resolve_ask(log, customer_id, call.arguments, profile)
-                if result.get("ask") and clarify_question_text is None:
-                    clarify_question_text = result.get("question")
-                elif result.get("already_asked"):
-                    blocked_repeat_ask = True
+                if clarify_question_text is not None or learned_this_turn:
+                    phrase = normalize_phrase((call.arguments or {}).get("phrase"))
+                    result = {
+                        "ok": True,
+                        "ask": False,
+                        "already_asked": True,
+                        "phrase": phrase,
+                        "question": None,
+                    }
+                else:
+                    result = _resolve_ask(log, customer_id, call.arguments, profile)
+                    if result.get("ask"):
+                        clarify_question_text = result.get("question")
+                    elif result.get("already_asked"):
+                        blocked_repeat_ask = True
             else:
                 result = execute_tool(conn, call.name, call.arguments)
             if call.name == "learn_phrase" and result.get("ok"):
+                learned_this_turn = True
                 log.append(
                     kind="lexicon",
                     actor="agent",
@@ -250,7 +262,10 @@ def _run(
                     "content": json.dumps(result, ensure_ascii=False),
                 }
             )
-        if clarify_question_text or blocked_repeat_ask:
+        if learned_this_turn:
+            clarify_question_text = None
+            blocked_repeat_ask = False
+        elif clarify_question_text or blocked_repeat_ask:
             break
         if switched_to and task == "reply":
             only_set = all(name == "set_language" for name in trace)
@@ -311,6 +326,7 @@ def _run(
 
     if task == "reply":
         text = _strip_thread_greeting(text, profile.get("retailer_name") or "")
+        text = _drop_learning_talk(text)
     if task == "reply" and intent == "decline":
         text = _without_payday(text) or decline_message(profile)
     confirm_offer_id = None
@@ -347,10 +363,13 @@ def _run(
             text = confirmation
         elif confirmation not in text:
             text = f"{confirmation}\n\n{text.strip()}"
+    if learned_this_turn:
+        clarify_question_text = None
+        blocked_repeat_ask = False
     if clarify_question_text:
         text = clarify_question_text
         intent = "question"
-    elif blocked_repeat_ask:
+    elif blocked_repeat_ask and not (text or "").strip():
         text = hold_line(profile.get("language"))
         intent = "question"
     text = guard_reply(text, profile.get("language"))
@@ -432,6 +451,22 @@ def _prior_tool_results(log: ActionLog, customer_id: int) -> dict:
     return found
 
 
+def _ask_count(log: ActionLog, customer_id: int) -> int:
+    count = 0
+    for entry in log.read_all():
+        if entry.get("kind") != "tool_result":
+            continue
+        payload = entry.get("payload") or {}
+        if payload.get("name") != "ask_phrase":
+            continue
+        if int(payload.get("customer_id") or 0) != int(customer_id):
+            continue
+        result = payload.get("result") or {}
+        if result.get("ask"):
+            count += 1
+    return count
+
+
 def _asked_before(log: ActionLog, customer_id: int, phrase: str) -> bool:
     norm = normalize_phrase(phrase)
     for entry in log.read_all():
@@ -454,7 +489,7 @@ def _resolve_ask(log: ActionLog, customer_id: int, arguments: dict, profile: dic
     language = arguments.get("language") or profile.get("language") or "en"
     if not phrase:
         return {"ok": False, "error": "phrase is empty", "ask": False, "already_asked": False, "phrase": ""}
-    if _asked_before(log, customer_id, phrase):
+    if _asked_before(log, customer_id, phrase) or _ask_count(log, customer_id) >= 2:
         return {
             "ok": True,
             "ask": False,
@@ -463,13 +498,15 @@ def _resolve_ask(log: ActionLog, customer_id: int, arguments: dict, profile: dic
             "language": language,
             "question": None,
         }
+    offer = profile.get("open_offer") or {}
+    understood = offer_price_clause(profile, offer.get("product_name"), offer.get("offer_price_ngn"))
     return {
         "ok": True,
         "ask": True,
         "already_asked": False,
         "phrase": phrase,
         "language": language,
-        "question": clarify_question(phrase, language),
+        "question": clarify_question(phrase, language, understood or None),
     }
 
 
@@ -543,6 +580,22 @@ def _ensure_offer_price(text: str, profile: dict) -> str:
     if clause and clause not in (text or ""):
         return f"{(text or '').rstrip()} {clause}".strip()
     return text
+
+
+_LEARNING_TALK = re.compile(
+    r"\b(?:learn(?:ed|ing)?|glossary|teaching|taught|new word|saving words|saved (?:that |the |a )?word)\b",
+    re.IGNORECASE,
+)
+
+
+def _drop_learning_talk(text: str) -> str:
+    """The customer never hears that a word was learned or saved."""
+    kept = [
+        sentence
+        for sentence in re.split(r"(?<=[.!?])\s+", (text or "").strip())
+        if sentence and not _LEARNING_TALK.search(sentence)
+    ]
+    return " ".join(kept).strip()
 
 
 def _without_payday(text: str) -> str:

@@ -37,7 +37,7 @@ def test_clarify_once_does_not_loop_or_drop_the_offer(shop, log_path):
     first = handle_reply(shop, log, llm, 1, "Wetin be jara?", max_tokens=300)
     assert first.intent == "question"
     assert first.order is None
-    assert first.message == 'Wetin "jara" mean?'
+    assert first.message == "Mama Gold Rice 50kg na ₦70,200. You mean jara?"
     assert llm.calls == 1
     assert shop.execute("SELECT status FROM offers WHERE customer_id = 1").fetchone()["status"] == status_before
 
@@ -47,6 +47,68 @@ def test_clarify_once_does_not_loop_or_drop_the_offer(shop, log_path):
     assert "mean" not in second.message.lower()
     assert second.order is None
     assert shop.execute("SELECT status FROM offers WHERE customer_id = 1").fetchone()["status"] == status_before
+
+
+def test_explaining_a_word_continues_the_sale_without_talking_about_learning(shop, log_path):
+    log = ActionLog(log_path)
+    from convoplex.agent import draft_winback
+    from convoplex.llm import MockMuse
+    from convoplex.prompts import _RULES
+
+    assert "Learning stays invisible" in _RULES
+    assert "at most two" in _RULES.lower()
+    draft_winback(shop, log, MockMuse(), 1, max_tokens=300)
+
+    class _Explain:
+        mode = "mock"
+        calls = 0
+
+        def complete(self, messages, *, tools, max_tokens, reasoning_effort=None, retry_on_length=True):
+            del messages, tools, max_tokens, reasoning_effort, retry_on_length
+            self.calls += 1
+            if self.calls == 1:
+                return Completion(
+                    content=None,
+                    tool_calls=[
+                        ToolCall(
+                            id="learn1",
+                            name="learn_phrase",
+                            arguments={
+                                "phrase": "jara",
+                                "language": "pcm",
+                                "meaning": "a little extra",
+                                "example": "give me jara",
+                                "customer_id": 1,
+                            },
+                        )
+                    ],
+                    finish_reason="tool_calls",
+                )
+            return Completion(
+                content="Thank you for teaching me that word. I saved it in the glossary.\nINTENT: question",
+                finish_reason="stop",
+            )
+
+    result = handle_reply(
+        shop,
+        log,
+        _Explain(),
+        1,
+        "jara mean small extra. How much the rice?",
+        max_tokens=300,
+    )
+    lowered = result.message.lower()
+    assert result.intent == "question"
+    assert "₦70,200" in result.message
+    assert "keep" in lowered
+    for banned in ("learn", "glossary", "teach", "taught", "saved"):
+        assert banned not in lowered
+    stored = shop.execute(
+        "SELECT meaning, confirmations FROM lexicon WHERE phrase = 'jara' AND language = 'pcm'"
+    ).fetchone()
+    assert stored["meaning"] == "a little extra"
+    assert stored["confirmations"] == 1
+    assert shop.execute("SELECT status FROM offers WHERE customer_id = 1").fetchone()["status"] == "sent"
 
 
 def test_learn_phrase_stores_and_dedupes(shop):
