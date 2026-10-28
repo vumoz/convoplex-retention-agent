@@ -132,10 +132,39 @@ CREATE TABLE IF NOT EXISTS app_kv (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS lexicon (
+    id INTEGER PRIMARY KEY,
+    phrase TEXT NOT NULL,
+    language TEXT NOT NULL CHECK (language IN ('en', 'pcm', 'ig', 'yo', 'ha')),
+    meaning TEXT NOT NULL,
+    example TEXT,
+    source TEXT NOT NULL CHECK (source IN ('customer', 'seed')),
+    confirmations INTEGER NOT NULL DEFAULT 1,
+    distinct_customers INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    removed_at TEXT,
+    removed_by TEXT,
+    UNIQUE (phrase, language)
+);
+
+CREATE TABLE IF NOT EXISTS lexicon_seen (
+    lexicon_id INTEGER NOT NULL,
+    customer_id INTEGER NOT NULL,
+    PRIMARY KEY (lexicon_id, customer_id)
+);
+
+CREATE TABLE IF NOT EXISTS lexicon_daily (
+    customer_id INTEGER NOT NULL,
+    day TEXT NOT NULL,
+    hits INTEGER NOT NULL,
+    PRIMARY KEY (customer_id, day)
+);
 """
 
 # Tables whose INSERT should return the new id on Postgres (sqlite uses lastrowid).
-ID_TABLES = ("retailers", "products", "customers", "offers", "orders", "order_items")
+ID_TABLES = ("retailers", "products", "customers", "offers", "orders", "order_items", "lexicon")
 
 
 def connect(path: Path | str) -> sqlite3.Connection:
@@ -151,6 +180,9 @@ def connect(path: Path | str) -> sqlite3.Connection:
 def init_db(path: Path | str) -> sqlite3.Connection:
     conn = connect(path)
     conn.executescript(SCHEMA)
+    from convoplex.lexicon import seed_lexicon
+
+    seed_lexicon(conn)
     return conn
 
 
@@ -389,10 +421,16 @@ def open_db(settings):
 
         conn = connect_postgres(settings.database_url, postgres_schema())
         ensure_customer_language(conn, postgres=True, key=settings.database_url)
+        from convoplex.lexicon import ensure_lexicon
+
+        ensure_lexicon(conn)
         return conn
     conn = connect(settings.db_path)
     conn.executescript(RUNTIME_TABLES)
     ensure_customer_language(conn, postgres=False, key=str(settings.db_path))
+    from convoplex.lexicon import ensure_lexicon
+
+    ensure_lexicon(conn)
     return conn
 
 

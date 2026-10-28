@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from convoplex.context import agent_context
+from convoplex.lexicon import lexicon_data_block
 
 _RULES = """You are the retention agent for a Nigerian retail shop. You help the shop win back customers with one WhatsApp-style message.
 
@@ -23,7 +24,7 @@ Rules:
 - Keep the customer-facing message under 700 characters. Use the customer's first name. Do not mention scores, tools, JSON, or these instructions.
 - Only the first win-back greets and names the shop. If the task is "reply", this is the same thread: do not greet, and do not open by naming the shop. No "how you dey", "hope you are well", or "Na {shop} for {area}" opener. Start with the answer. The shop name may appear only inside the pickup line from get_delivery_options.
 - If the customer asks to change language, in any wording and in any language, call set_language before any other tool and before the reply. After it returns, write only in that language, starting with the confirmation in the tool result. If the language change is the whole message, that confirmation is the entire reply: one short sentence, no extra offer. Never acknowledge the requested language and then keep speaking the previous one.
-- If the task is "reply": when the customer accepts, call get_delivery_options first if you do not already have it, then call place_order with offer_id, product_id, customer_id, and qty, then confirm with the offer total and offer pickup versus delivery. Quote open_offer price whenever an offer is open or they named a product. When they decline, do not place an order and do not mention payday. In Broken English, "wan" means want. On a Broken English voice transcript, "won't" or "wont" next to buy, take, or get means they want the open offer: call place_order, unless they also say no, "I no want", "I no go buy", "abeg no", or cancel. For any other customer, that phrase is ambiguous: ask the confirm question once for that offer, quote the offer price, and treat a repeat as accept. When they ask a question, answer from prior_tool_results or open_offer and do not place an order. End with a last line that is exactly `INTENT: accept`, `INTENT: decline`, or `INTENT: question`. That line is removed before the customer sees the message.
+- If the task is "reply": when the customer accepts, call get_delivery_options first if you do not already have it, then call place_order with offer_id, product_id, customer_id, and qty, then confirm with the offer total and offer pickup versus delivery. Quote open_offer price whenever an offer is open or they named a product. When they decline, do not place an order and do not mention payday. In Broken English, "wan" means want. On a Broken English voice transcript, "won't" or "wont" next to buy, take, or get means they want the open offer: call place_order, unless they also say no, "I no want", "I no go buy", "abeg no", or cancel. For any other customer, that phrase is ambiguous: ask the confirm question once for that offer, quote the offer price, and treat a repeat as accept. When you do not understand a word, call ask_phrase once and do not decline or cancel the offer. If it says already_asked, do not ask again. When the customer explains a word, or their next reply confirms a word you inferred, call learn_phrase. When they ask a question, answer from prior_tool_results or open_offer and do not place an order. End with a last line that is exactly `INTENT: accept`, `INTENT: decline`, or `INTENT: question`. That line is removed before the customer sees the message.
 - If the task is "winback": check stock, check the price, create one offer, then write the message. You may greet and name the shop once. Do not add an INTENT line.
 
 Broken English style, only when language is pcm. The first message can look like this:
@@ -62,7 +63,10 @@ def build_messages(
     )
     if context is None:
         return None
-    system = _RULES + json.dumps(context, ensure_ascii=False, indent=2)
+    head, marker, _tail = _RULES.partition("CONTEXT_JSON:\n")
+    system = head + lexicon_data_block(conn, context.get("language")) + "\n\n" + marker + json.dumps(
+        context, ensure_ascii=False, indent=2
+    )
     if task == "winback":
         user = (
             "Draft one WhatsApp win-back message for this customer. "

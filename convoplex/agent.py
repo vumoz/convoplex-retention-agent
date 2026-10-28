@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from convoplex.actionlog import ActionLog
 from convoplex.context import agent_context
 from convoplex.languages import CONFIRM, guard_reply, message_asks_something_else, message_is_language_only
+from convoplex.lexicon import clarify_question, hold_line, normalize_phrase
 from convoplex.integrations.whatsapp import (
     CONFIRM_NO_ID,
     CONFIRM_NO_TITLE,
@@ -166,6 +167,8 @@ def _run(
         # double the budget: that retry spent most of the live language switch.
         reply_kwargs = {"reasoning_effort": "minimal", "retry_on_length": False}
     decision = _reply_decision(user_text, profile, log, customer_id, from_voice) if task == "reply" else None
+    clarify_question_text = None
+    blocked_repeat_ask = False
 
     for _round in (() if decision else range(1, MAX_ROUNDS + 1)):
         try:
@@ -195,7 +198,30 @@ def _run(
                     "arguments": call.arguments,
                 },
             )
-            result = execute_tool(conn, call.name, call.arguments)
+            if call.name == "ask_phrase":
+                result = _resolve_ask(log, customer_id, call.arguments, profile)
+                if result.get("ask") and clarify_question_text is None:
+                    clarify_question_text = result.get("question")
+                elif result.get("already_asked"):
+                    blocked_repeat_ask = True
+            else:
+                result = execute_tool(conn, call.name, call.arguments)
+            if call.name == "learn_phrase" and result.get("ok"):
+                log.append(
+                    kind="lexicon",
+                    actor="agent",
+                    payload={
+                        "action": "learn",
+                        "customer_id": customer_id,
+                        "id": result.get("id"),
+                        "phrase": result.get("phrase"),
+                        "language": result.get("language"),
+                        "meaning": result.get("meaning"),
+                        "source": result.get("source"),
+                        "confirmations": result.get("confirmations"),
+                        "created": result.get("created"),
+                    },
+                )
             if call.name == "set_language" and result.get("ok"):
                 switched_to = str(result["language"])
                 profile["language"] = switched_to
@@ -224,6 +250,8 @@ def _run(
                     "content": json.dumps(result, ensure_ascii=False),
                 }
             )
+        if clarify_question_text or blocked_repeat_ask:
+            break
         if switched_to and task == "reply":
             only_set = all(name == "set_language" for name in trace)
             extra = message_asks_something_else(user_text)
@@ -257,6 +285,10 @@ def _run(
     elif task == "reply" and intent is None and user_text:
         intent = classify_reply(user_text)
 
+    if clarify_question_text:
+        intent = "question"
+    elif blocked_repeat_ask:
+        intent = "question"
     if decision == "accept":
         intent = "accept"
     elif decision == "decline":
@@ -264,7 +296,13 @@ def _run(
     elif decision == "confirm":
         intent = "question"
 
-    if task == "reply" and intent == "accept" and order is None and profile.get("open_offer"):
+    if (
+        task == "reply"
+        and intent == "accept"
+        and order is None
+        and profile.get("open_offer")
+        and not clarify_question_text
+    ):
         if not delivery:
             delivery = _required_delivery(conn, log, customer_id, profile, trace)
         order = _fallback_place(conn, log, customer_id, profile, trace, user_text or "")
@@ -288,7 +326,7 @@ def _run(
         text = winback_message(profile, offer)
     if task == "winback":
         text = one_seasonal_hook(text)
-    if task == "reply" and intent == "question" and profile.get("open_offer"):
+    if task == "reply" and intent == "question" and profile.get("open_offer") and not clarify_question_text and not blocked_repeat_ask:
         offer_price = int(profile["open_offer"]["offer_price_ngn"])
         if naira(offer_price) not in text:
             held = profile["open_offer"]
@@ -309,11 +347,17 @@ def _run(
             text = confirmation
         elif confirmation not in text:
             text = f"{confirmation}\n\n{text.strip()}"
+    if clarify_question_text:
+        text = clarify_question_text
+        intent = "question"
+    elif blocked_repeat_ask:
+        text = hold_line(profile.get("language"))
+        intent = "question"
     text = guard_reply(text, profile.get("language"))
     if task == "winback" and offer and offer.get("ok"):
         mark_offer_sent(conn, int(offer["offer_id"]), text, language=profile.get("language"))
         offer = {**offer, "status": "sent", "message": text}
-    if task == "reply" and intent == "decline" and profile.get("open_offer"):
+    if task == "reply" and intent == "decline" and profile.get("open_offer") and not clarify_question_text:
         mark_offer_declined(conn, int(profile["open_offer"]["offer_id"]))
 
     payload = {
@@ -386,6 +430,47 @@ def _prior_tool_results(log: ActionLog, customer_id: int) -> dict:
         if name:
             found[name] = result
     return found
+
+
+def _asked_before(log: ActionLog, customer_id: int, phrase: str) -> bool:
+    norm = normalize_phrase(phrase)
+    for entry in log.read_all():
+        if entry.get("kind") != "tool_result":
+            continue
+        payload = entry.get("payload") or {}
+        if payload.get("name") != "ask_phrase":
+            continue
+        if int(payload.get("customer_id") or 0) != int(customer_id):
+            continue
+        result = payload.get("result") or {}
+        if result.get("ask") and normalize_phrase(result.get("phrase")) == norm:
+            return True
+    return False
+
+
+def _resolve_ask(log: ActionLog, customer_id: int, arguments: dict, profile: dict) -> dict:
+    arguments = arguments if isinstance(arguments, dict) else {}
+    phrase = normalize_phrase(arguments.get("phrase"))
+    language = arguments.get("language") or profile.get("language") or "en"
+    if not phrase:
+        return {"ok": False, "error": "phrase is empty", "ask": False, "already_asked": False, "phrase": ""}
+    if _asked_before(log, customer_id, phrase):
+        return {
+            "ok": True,
+            "ask": False,
+            "already_asked": True,
+            "phrase": phrase,
+            "language": language,
+            "question": None,
+        }
+    return {
+        "ok": True,
+        "ask": True,
+        "already_asked": False,
+        "phrase": phrase,
+        "language": language,
+        "question": clarify_question(phrase, language),
+    }
 
 
 def _reply_decision(user_text: str | None, profile: dict, log: ActionLog, customer_id: int, from_voice: bool) -> str | None:

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 from convoplex.db import scenario_as_of, transaction
 from convoplex.languages import CONFIRM, clean_language, language_label, save_language
+from convoplex.lexicon import learn_phrase as store_phrase
 
 MIN_DISCOUNT = 5
 MAX_DISCOUNT = 15
@@ -134,6 +135,48 @@ TOOLS = [
                     },
                 },
                 "required": ["customer_id", "language"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ask_phrase",
+            "description": (
+                "Ask once what an unknown word or phrase means. Use this in any supported "
+                "language when you are not sure. Do not decline and do not cancel an offer. "
+                "If the tool says already_asked, do not ask again."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "phrase": {"type": "string"},
+                    "language": {"type": "string", "description": "en, pcm, ig, yo, or ha"},
+                    "customer_id": {"type": "integer"},
+                },
+                "required": ["phrase"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "learn_phrase",
+            "description": (
+                "Save a local word the customer just explained, or one you inferred and their "
+                "next reply confirmed. Pass customer_id from the context. Do not save words "
+                "already listed in LEXICON_DATA."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "phrase": {"type": "string"},
+                    "language": {"type": "string"},
+                    "meaning": {"type": "string"},
+                    "example": {"type": "string"},
+                    "customer_id": {"type": "integer"},
+                },
+                "required": ["phrase", "language", "meaning", "customer_id"],
             },
         },
     },
@@ -531,6 +574,7 @@ def execute_tool(conn: sqlite3.Connection, name: str, arguments: dict) -> dict:
         "place_order": place_order,
         "get_delivery_options": get_delivery_options,
         "set_language": set_language_tool,
+        "learn_phrase": store_phrase,
     }
     fn = functions.get(name)
     if fn is None:

@@ -59,6 +59,7 @@ from convoplex.integrations.whatsapp import (
     verify_subscription,
 )
 from convoplex.languages import clean_language, language_label, save_language
+from convoplex.lexicon import markdown_export, public_rows, remove_phrase, restore_phrase
 from convoplex.llm import LLMError, LiveMuse, MockMuse
 from convoplex.metrics import snapshot
 from convoplex.synthetic.generate import DEFAULT_CUSTOMERS, DEFAULT_SEED, generate, reset_and_seed, seed_if_empty
@@ -380,6 +381,45 @@ def create_app(settings: Settings | None = None, *, generate_if_missing: bool = 
         except LLMError as exc:
             raise HTTPException(502, str(exc)) from exc
         return _agent_body(result)
+
+    @app.get("/v1/lexicon")
+    def lexicon_list(
+        request: Request,
+        language: str | None = None,
+        include_removed: bool = False,
+        conn=Depends(get_conn),
+    ):
+        if include_removed:
+            require_admin(request, request.app.state.settings)
+        return {"synthetic": True, "words": public_rows(conn, language, include_removed=include_removed)}
+
+    @app.get("/v1/lexicon/export")
+    def lexicon_export(conn=Depends(get_conn)):
+        return PlainTextResponse(markdown_export(conn), media_type="text/markdown")
+
+    @app.post("/v1/lexicon/{lexicon_id}/remove", dependencies=[Depends(admin_dep)])
+    def lexicon_remove(lexicon_id: int, conn=Depends(get_conn)):
+        removed = remove_phrase(conn, lexicon_id)
+        if removed is None:
+            raise HTTPException(404, "word not found")
+        app.state.log.append(
+            kind="lexicon",
+            actor="admin",
+            payload={"action": "remove", **removed},
+        )
+        return {"ok": True, **removed}
+
+    @app.post("/v1/lexicon/{lexicon_id}/restore", dependencies=[Depends(admin_dep)])
+    def lexicon_restore(lexicon_id: int, conn=Depends(get_conn)):
+        restored = restore_phrase(conn, lexicon_id)
+        if restored is None:
+            raise HTTPException(404, "word not found")
+        app.state.log.append(
+            kind="lexicon",
+            actor="admin",
+            payload={"action": "restore", **restored},
+        )
+        return {"ok": True, **restored}
 
     @app.get("/v1/metrics")
     def metrics(conn=Depends(get_conn)):

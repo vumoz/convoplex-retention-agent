@@ -347,6 +347,9 @@
       text-transform: uppercase;
       vertical-align: 1px;
     }
+    .lexicon-list { display: flex; flex-direction: column; gap: 8px; padding: 8px 14px 16px; }
+    .lexicon-row { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+    .lexicon-row p { margin: 0; }
     .log { margin-top: 14px; }
     .log-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
     .log-head h2 { margin-right: auto; }
@@ -477,6 +480,15 @@
         </form>
       </section>
     </div>
+    <section class="panel" id="lexicon-panel">
+      <div class="log-head">
+        <h2 id="lexicon-title">Words the agent has learned</h2>
+        <a class="quiet write-only" id="lexicon-export" href="/v1/lexicon/export">Export markdown</a>
+      </div>
+      <div class="lexicon-list" id="lexicon-list">
+        <p class="empty">Loading words…</p>
+      </div>
+    </section>
     <section class="panel log">
       <div class="log-head">
         <h2>Action log</h2>
@@ -1221,11 +1233,59 @@
         const required = Boolean(session && session.required);
         const admin = Boolean(session && session.admin);
         state.admin = admin;
+        state.adminRequired = required;
         form.hidden = !required || admin;
         badge.hidden = !required || !admin;
         renderPerson();
+        loadLexicon();
       } catch (err) {
         // The shop view still loads when the session check fails.
+      }
+    }
+
+    async function loadLexicon() {
+      const host = document.getElementById("lexicon-list");
+      const title = document.getElementById("lexicon-title");
+      if (title) title.textContent = READ_ONLY ? "Words the agent has learned" : "Words learned";
+      let words = [];
+      try {
+        const body = await api("/v1/lexicon");
+        words = body.words || [];
+      } catch (err) {
+        host.replaceChildren(el("p", "empty", "Words could not be loaded."));
+        return;
+      }
+      host.replaceChildren();
+      if (!words.length) {
+        host.append(el("p", "empty", "No words yet."));
+        return;
+      }
+      const canRemove = !READ_ONLY && (state.admin || state.adminRequired === false);
+      for (const word of words) {
+        const row = el("div", "lexicon-row");
+        const copy = document.createElement("div");
+        copy.append(el("p", null, word.phrase + " = " + word.meaning));
+        copy.append(el("p", "sub", word.language + " · " + word.source + " · " + word.confirmations + " confirmations · " + word.distinct_customers + " customers"));
+        row.append(copy);
+        if (canRemove) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "quiet write-only";
+          button.textContent = "Remove";
+          button.addEventListener("click", () => removeWord(word.id));
+          row.append(button);
+        }
+        host.append(row);
+      }
+    }
+
+    async function removeWord(id) {
+      if (READ_ONLY) return;
+      try {
+        await api("/v1/lexicon/" + id + "/remove", {method: "POST"});
+        await loadLexicon();
+      } catch (err) {
+        setError(err.message);
       }
     }
 
@@ -1266,6 +1326,7 @@
       renderThread();
       renderPromo();
       renderLog();
+      loadLexicon();
       setBusy(state.busy);
       if (READ_ONLY) {
         const banner = document.querySelector(".banner");
