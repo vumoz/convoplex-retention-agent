@@ -10,9 +10,10 @@ from dataclasses import dataclass, field
 from convoplex.actionlog import ActionLog
 from convoplex.context import agent_context
 from convoplex.languages import CONFIRM, guard_reply, message_asks_something_else, message_is_language_only
-from convoplex.llm import Completion, LLMError, ToolCall, classify_reply, split_intent
+from convoplex.llm import Completion, LLMError, ToolCall, classify_reply, purchase_is_ambiguous, split_intent
 from convoplex.messages import (
     accept_message,
+    confirm_hold_message,
     decline_message,
     delivery_fee_ngn,
     one_seasonal_hook,
@@ -70,6 +71,7 @@ def handle_reply(
     *,
     max_tokens: int,
     language: str | None = None,
+    from_voice: bool = False,
 ) -> AgentResult:
     cleaned = text.strip()
     if not cleaned:
@@ -83,6 +85,7 @@ def handle_reply(
         user_text=cleaned,
         max_tokens=max_tokens,
         language=language,
+        from_voice=from_voice,
     )
 
 
@@ -96,6 +99,7 @@ def _run(
     user_text: str | None,
     max_tokens: int,
     language: str | None = None,
+    from_voice: bool = False,
 ) -> AgentResult:
     prior = _prior_tool_results(log, customer_id) if task == "reply" else None
     profile = agent_context(
@@ -235,7 +239,15 @@ def _run(
     elif task == "reply" and intent is None and user_text:
         intent = classify_reply(user_text)
 
-    if task == "reply" and intent == "accept" and order is None and profile.get("open_offer"):
+    ambiguous_buy = task == "reply" and purchase_is_ambiguous(user_text)
+    spoken_pcm = (profile.get("language") == "pcm")
+    # "wan" means want. A voice note that heard "won't", and any voice-only
+    # decline, keeps the offer until the customer confirms.
+    hold_for_confirm = task == "reply" and (
+        (ambiguous_buy and (from_voice or spoken_pcm))
+        or (from_voice and intent == "decline")
+    )
+    if task == "reply" and intent == "accept" and order is None and profile.get("open_offer") and not hold_for_confirm:
         if not delivery:
             delivery = _required_delivery(conn, log, customer_id, profile, trace)
         order = _fallback_place(conn, log, customer_id, profile, trace, user_text or "")
@@ -244,8 +256,18 @@ def _run(
 
     if task == "reply":
         text = _strip_thread_greeting(text, profile.get("retailer_name") or "")
-    if task == "reply" and intent == "decline":
+    if task == "reply" and intent == "decline" and not hold_for_confirm:
         text = _without_payday(text) or decline_message(profile)
+    if hold_for_confirm:
+        intent = "question"
+        order = None
+        held = profile.get("open_offer") or {}
+        product_name = None
+        price_ngn = None
+        if held and (_message_names_product(user_text, held) or from_voice or ambiguous_buy):
+            product_name = held.get("product_name")
+            price_ngn = held.get("offer_price_ngn")
+        text = confirm_hold_message(profile, product_name, price_ngn)
 
     if task == "winback" and offer and offer.get("ok") and "₦" not in text:
         text = winback_message(profile, offer)
@@ -344,6 +366,15 @@ def _prior_tool_results(log: ActionLog, customer_id: int) -> dict:
         if name:
             found[name] = result
     return found
+
+
+def _message_names_product(text: str | None, offer: dict) -> bool:
+    """Rice, Mama Gold, or the offer's own product name in the customer's words."""
+    low = (text or "").lower()
+    if re.search(r"\brice\b", low) or "mama gold" in low:
+        return True
+    name = (offer.get("product_name") or "").lower()
+    return bool(name and name in low)
 
 
 def _without_payday(text: str) -> str:

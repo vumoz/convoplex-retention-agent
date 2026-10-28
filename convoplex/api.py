@@ -642,6 +642,7 @@ def create_app(settings: Settings | None = None, *, generate_if_missing: bool = 
                 customer_id,
                 transcript.text,
                 max_tokens=settings.max_tokens,
+                from_voice=True,
             )
         except LookupError:
             raise HTTPException(404, "customer not found") from None

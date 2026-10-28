@@ -193,6 +193,7 @@ def _reply_turn(conn, log, llm, customer_id, text, *, max_tokens, language, via=
         text,
         max_tokens=max_tokens,
         language=language,
+        from_voice=via == "voice",
     )
     placed = int(last.order["order_id"]) if last.order and last.order.get("ok") else None
     return {

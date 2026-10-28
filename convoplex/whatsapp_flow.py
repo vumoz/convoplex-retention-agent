@@ -963,7 +963,7 @@ def _audio_reply(
         return "", None
     if interpret_language(spoken):
         return spoken, None
-    result = handle_reply(conn, log, llm, customer_id, spoken, max_tokens=max_tokens)
+    result = handle_reply(conn, log, llm, customer_id, spoken, max_tokens=max_tokens, from_voice=True)
     return transcript.text, result
 
 

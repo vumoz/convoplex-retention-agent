@@ -479,6 +479,35 @@ def accept_message(ctx: dict, order: dict, delivery: dict | None = None) -> str:
     )
 
 
+def confirm_hold_message(ctx: dict, product_name: str | None, price_ngn: int | None) -> str:
+    """Ask before treating a voice note, or a Broken English wan/won't, as a cancellation.
+
+    The offer stays. When the customer named a product, the price is in the question.
+    """
+    code = _code(ctx)
+    product = (product_name or "").strip()
+    price = naira(price_ngn) if price_ngn is not None and product else None
+    if code == "pcm":
+        if price:
+            return f"You wan buy am abi you no want am? {product} na {price}."
+        return "You wan buy am abi you no want am?"
+    if code == "ig":
+        if price:
+            return f"Ị chọrọ ịzụta ya ka ị chọghị? {product} bụ {price}."
+        return "Ị chọrọ ịzụta ya ka ị chọghị?"
+    if code == "yo":
+        if price:
+            return f"Ṣé o fẹ́ rà á tàbí o ò fẹ́? {product} jẹ́ {price}."
+        return "Ṣé o fẹ́ rà á tàbí o ò fẹ́?"
+    if code == "ha":
+        if price:
+            return f"Kana son siya ko ba ka so ba? {product} shi ne {price}."
+        return "Kana son siya ko ba ka so ba?"
+    if price:
+        return f"Do you want to buy it, or not? {product} is {price}."
+    return "Do you want to buy it, or not? I will keep this offer."
+
+
 def decline_message(ctx: dict) -> str:
     first = _first(ctx["full_name"])
     area = ctx.get("retailer_area") or ctx["area"]

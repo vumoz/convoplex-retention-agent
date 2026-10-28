@@ -54,6 +54,12 @@ DECLINE = (
     "don't",
     "cancel",
 )
+# "wan" is "want" in Broken English. A voice note often hears it as "won't".
+_AMBIGUOUS_BUY = re.compile(
+    r"\b(?:won'?t|wont|wan|wanna)\b(?:\s+\w+){0,4}\s+\b(?:buy|take|get)\b"
+    r"|\b(?:buy|take|get)\b(?:\s+\w+){0,4}\s+\b(?:won'?t|wont|wan|wanna)\b",
+    re.IGNORECASE,
+)
 
 
 class LLMError(RuntimeError):
@@ -62,9 +68,21 @@ class LLMError(RuntimeError):
         self.calls = list(calls or [])
 
 
+def purchase_is_ambiguous(text: str | None) -> bool:
+    """True when won't/wan/wanna sits next to buy, take, or get.
+
+    In Broken English, "wan" means want. Voice transcription often writes "won't".
+    That pair must not cancel an offer on its own.
+    """
+    folded = (text or "").replace("’", "'").replace("‘", "'")
+    return bool(_AMBIGUOUS_BUY.search(folded))
+
+
 def classify_reply(text: str) -> str:
     """Keyword intent for the mock, and a fallback when a live draft omits INTENT."""
     lowered = text.lower().strip()
+    if purchase_is_ambiguous(lowered):
+        return "question"
     if any(_contains(lowered, phrase) for phrase in EXPLICIT_ACCEPT):
         return "accept"
     if re.search(r"\bdeliver", lowered) and not re.search(
