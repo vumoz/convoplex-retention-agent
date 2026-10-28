@@ -68,6 +68,12 @@
     .header-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
     .admin-form { display: inline-flex; align-items: center; gap: 6px; }
     .admin-form[hidden] { display: none; }
+    body[data-mode="demo"] #channel-toggle,
+    body[data-mode="demo"] #admin-login,
+    body[data-mode="demo"] #admin-state,
+    body[data-mode="demo"] #reset,
+    body[data-mode="demo"] #composer,
+    body[data-mode="demo"] .write-only { display: none !important; }
     .admin-form input {
       width: 9.5rem;
       border: 1px solid var(--line);
@@ -137,7 +143,7 @@
     .metric strong { display: block; margin-top: 4px; font-size: 16px; font-variant-numeric: tabular-nums; }
     .layout {
       display: grid;
-      grid-template-columns: 340px 1fr;
+      grid-template-columns: minmax(0, 340px) minmax(0, 1fr);
       gap: 14px;
       margin-top: 14px;
       align-items: start;
@@ -147,6 +153,7 @@
       border: 1px solid var(--line);
       border-radius: var(--radius);
       box-shadow: var(--shadow);
+      min-width: 0;
     }
     .shop-panel { display: flex; flex-direction: column; min-height: 420px; }
     .shops { overflow: auto; max-height: calc(100vh - 280px); }
@@ -159,7 +166,7 @@
       font-size: 20px;
       margin: 0;
     }
-    .filters { display: flex; gap: 6px; margin-top: 10px; }
+    .filters { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
     .find { display: block; margin-top: 10px; }
     .find input {
       width: 100%;
@@ -387,7 +394,7 @@
     }
   </style>
 </head>
-<body>
+<body data-mode="admin">
   <div class="wrap">
     <header class="top">
       <div class="brand">
@@ -499,6 +506,8 @@
       whatsapp: null,
     };
     const DEMO_CUSTOMER_ID = 184;
+    const READ_ONLY = document.body.dataset.mode === "demo";
+    const WRITE_ACTIONS = new Set(["winback", "wa-winback", "wa-promo", "channel", "reset"]);
 
     function el(tag, className, text) {
       const node = document.createElement(tag);
@@ -708,7 +717,7 @@
       const customer = state.selected;
       const language = languageLabel(customer.language);
       copy.append(el("h2", null, customer.full_name));
-      copy.append(el("p", "sub", `${customer.retailer_name} · ${customer.area} · ${language} · ${customer.phone}`));
+      copy.append(el("p", "sub", `${customer.retailer_name} · ${customer.area} · ${language} · ${maskShown(customer.phone)}`));
       if (state.admin) {
         const picker = document.createElement("select");
         picker.id = "language-pick";
@@ -753,9 +762,10 @@
       waButton.title = whatsAppReady()
         ? "Send the win-back to the demo phone"
         : "Switch to WhatsApp live once the env is set";
-      const actions = el("div", "actions");
+      const actions = el("div", "actions write-only");
       actions.append(button, waButton);
-      row.append(copy, actions);
+      row.append(copy);
+      if (!READ_ONLY) row.append(actions);
       host.append(row);
     }
 
@@ -836,18 +846,29 @@
       return null;
     }
 
+    function maskShown(value) {
+      const digits = String(value || "").replace(/\D/g, "");
+      if (digits.length < 2) return "••";
+      return "••" + digits.slice(-2);
+    }
+
     function renderPromo() {
       const host = document.getElementById("promo");
       const offer = state.thread && state.thread.offer;
       host.replaceChildren();
-      if (!offer) {
+      if (!offer && !READ_ONLY) {
         host.hidden = true;
         return;
       }
       host.hidden = false;
       const copy = document.createElement("div");
-      copy.append(el("h3", null, offer.product_name));
-      copy.append(el("p", "promo-price", `${naira(offer.offer_price_ngn)} · was ${naira(offer.list_price_ngn)} · ${offer.discount_percent}% off`));
+      if (offer) {
+        copy.append(el("h3", null, offer.product_name));
+        copy.append(el("p", "promo-price", `${naira(offer.offer_price_ngn)} · was ${naira(offer.list_price_ngn)} · ${offer.discount_percent}% off`));
+      } else {
+        copy.append(el("h3", null, "Mama Gold Rice 50kg"));
+        copy.append(el("p", "promo-price", "₦70,200 · was ₦78,000 · 10% off"));
+      }
       copy.append(el("p", "fine", "The image model draws the product only. Shop name and naira prices are printed afterwards, so every number matches the offer."));
       const button = document.createElement("button");
       button.type = "button";
@@ -869,20 +890,29 @@
       waCard.title = whatsAppReady()
         ? "Upload the promo card and send it to the demo phone"
         : "Switch to WhatsApp live once the env is set";
-      const actions = el("div", "promo-actions");
+      const actions = el("div", "promo-actions write-only");
       actions.append(button, waCard);
-      copy.append(actions);
+      if (!READ_ONLY && offer) copy.append(actions);
       const note = el("p", state.promoError ? "promo-error" : "fine", state.promoNote || "");
       note.id = "promo-note";
       note.hidden = !state.promoNote;
       copy.append(note);
       const frame = el("div", "promo-frame");
-      if (state.cardVersion) {
-        const img = document.createElement("img");
-        img.alt = `Promo card for ${offer.product_name}, ${naira(offer.offer_price_ngn)}`;
+      const img = document.createElement("img");
+      img.alt = offer
+        ? `Promo card for ${offer.product_name}, ${naira(offer.offer_price_ngn)}`
+        : "Sample promo card for Mama Gold Rice 50kg, ₦70,200";
+      if (offer && state.cardVersion) {
         img.src = `${offer.promo_url}?t=${state.cardVersion}`;
-        frame.append(img);
+      } else if (offer) {
+        img.src = offer.promo_url;
+        img.addEventListener("error", () => {
+          img.src = "/demo/promo-card";
+        });
+      } else {
+        img.src = "/demo/promo-card";
       }
+      frame.append(img);
       host.append(copy, frame);
     }
 
@@ -967,12 +997,18 @@
       state.thread = await api(`/v1/customers/${id}/thread`);
       state.selected = state.thread.customer;
       rememberCustomer(state.selected);
-      await api("/v1/whatsapp/customer", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({customer_id: id}),
-      });
-      state.whatsapp = await api("/v1/whatsapp/status");
+      if (!READ_ONLY) {
+        try {
+          await api("/v1/whatsapp/customer", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({customer_id: id}),
+          });
+          state.whatsapp = await api("/v1/whatsapp/status");
+        } catch (err) {
+          // Mapping the demo phone is an admin write. Reading the thread is not.
+        }
+      }
       setBusy(false);
       renderWhatsApp();
       renderShops();
@@ -982,6 +1018,7 @@
     }
 
     async function sendWinback() {
+      if (READ_ONLY) return;
       if (!state.selected || state.busy || (state.thread && state.thread.order)) return;
       setBusy(true);
       setError("");
@@ -1000,7 +1037,7 @@
     }
 
     async function sendReply(text) {
-      if (!state.selected || state.busy) return;
+      if (READ_ONLY || !state.selected || state.busy) return;
       setBusy(true);
       setError("");
       try {
@@ -1021,6 +1058,7 @@
     }
 
     async function sendVoice(file) {
+      if (READ_ONLY) return;
       if (!state.selected || state.busy || !file) return;
       setBusy(true);
       setError("");
@@ -1048,6 +1086,7 @@
     }
 
     async function sendPromo() {
+      if (READ_ONLY) return;
       const offer = state.thread && state.thread.offer;
       if (!offer || state.promoBusy) return;
       const offerId = offer.offer_id;
@@ -1093,6 +1132,7 @@
     }
 
     async function sendWinbackWhatsApp() {
+      if (READ_ONLY) return;
       if (!state.selected || state.busy || !whatsAppReady()) return;
       setBusy(true);
       setError("");
@@ -1119,6 +1159,7 @@
     }
 
     async function sendPromoWhatsApp() {
+      if (READ_ONLY) return;
       const offer = state.thread && state.thread.offer;
       if (!offer || state.promoBusy || state.busy || !whatsAppReady()) return;
       setError("");
@@ -1135,13 +1176,14 @@
 
     async function verifyChain() {
       setError("");
-      const result = await api("/v1/actions/verify", {method: "POST"});
+      const result = await api("/v1/actions/verify", {method: "GET"});
       const node = document.getElementById("verify-result");
       node.className = result.ok ? "verdict pass" : "verdict fail";
       node.textContent = result.ok ? `PASS · ${result.entries} entries` : `FAIL · ${result.error}`;
     }
 
     async function resetDemo() {
+      if (READ_ONLY) return;
       const button = document.getElementById("reset");
       if (button.dataset.armed !== "yes") {
         button.dataset.armed = "yes";
@@ -1225,6 +1267,13 @@
       renderPromo();
       renderLog();
       setBusy(state.busy);
+      if (READ_ONLY) {
+        const banner = document.querySelector(".banner");
+        banner.textContent = "Read-only synthetic demo. Customers, offers, and the action log are fictional. Phone numbers show the last two digits only. This page cannot send a message or change the shop. Scenario date " + (document.getElementById("asof").textContent || "27 Oct 2026") + ".";
+        const pick = state.customers.find((row) => row.id === DEMO_CUSTOMER_ID) || state.customers[0];
+        if (pick) await selectCustomer(pick.id);
+        return;
+      }
       await refreshAdmin();
     }
 
@@ -1238,6 +1287,7 @@
       const button = event.target.closest("[data-action]");
       if (!button || button.disabled) return;
       const action = button.dataset.action;
+      if (READ_ONLY && WRITE_ACTIONS.has(action)) return;
       if (action === "filter") {
         state.filter = button.dataset.filter;
         renderFilters();
@@ -1272,6 +1322,7 @@
 
     document.getElementById("admin-login").addEventListener("submit", (event) => {
       event.preventDefault();
+      if (READ_ONLY) return;
       const token = document.getElementById("admin-token").value;
       api("/v1/admin/login", {
         method: "POST",
@@ -1286,7 +1337,7 @@
 
     document.getElementById("person").addEventListener("change", (event) => {
       const picker = event.target.closest("#language-pick");
-      if (!picker || !state.selected) return;
+      if (READ_ONLY || !picker || !state.selected) return;
       const language = picker.value;
       api(`/v1/customers/${state.selected.id}/language`, {
         method: "POST",
@@ -1304,12 +1355,14 @@
 
     document.getElementById("composer").addEventListener("submit", (event) => {
       event.preventDefault();
+      if (READ_ONLY) return;
       const text = document.getElementById("reply").value.trim();
       if (!text) return;
       sendReply(text);
     });
 
     document.getElementById("voice").addEventListener("change", () => {
+      if (READ_ONLY) return;
       const file = document.getElementById("voice").files[0];
       const label = document.getElementById("voice-label");
       if (!file) {

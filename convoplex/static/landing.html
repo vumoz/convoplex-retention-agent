@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Convoplex Retention Agent</title>
+  <meta name="description" content="Convoplex Retention Agent, built in Lagos for Nigerian retailers. Win-back offers on WhatsApp, in naira, with voice notes and five languages." />
+  <style>
+    :root {
+      --paper: #f3eee4;
+      --card: #fffaf3;
+      --ink: #1c1712;
+      --soft: #5e5348;
+      --line: #e4d5c0;
+      --palm: #0c6b4d;
+      --palm-deep: #083d2c;
+      --gold: #c4922a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: "Segoe UI", "Noto Sans", "Helvetica Neue", sans-serif;
+      background: var(--paper);
+      line-height: 1.5;
+    }
+    a { color: var(--palm-deep); }
+    .wrap { max-width: 760px; margin: 0 auto; padding: 28px 18px 64px; }
+    header { margin-bottom: 22px; }
+    .kicker {
+      margin: 0 0 8px;
+      color: var(--palm);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    h1 {
+      font-family: Georgia, "Iowan Old Style", Palatino, serif;
+      font-size: clamp(2rem, 5vw, 2.7rem);
+      line-height: 1.15;
+      font-weight: 700;
+      margin: 0 0 12px;
+    }
+    .lede { font-size: 1.08rem; margin: 0; color: var(--ink); }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 22px 0 8px; }
+    .button, .ghost {
+      display: inline-block;
+      text-decoration: none;
+      border-radius: 999px;
+      padding: 12px 18px;
+      font-weight: 700;
+    }
+    .button { background: var(--palm); color: #f7f3ea; }
+    .button:hover { background: var(--palm-deep); }
+    .ghost { background: transparent; color: var(--palm-deep); border: 1px solid var(--line); }
+    section {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 16px 18px;
+      margin-top: 14px;
+    }
+    h2 { font-size: 1.05rem; margin: 0 0 8px; }
+    p { margin: 0 0 10px; }
+    p:last-child { margin-bottom: 0; }
+    ul { margin: 0; padding-left: 1.15rem; }
+    li { margin: 0 0 6px; }
+    code { font-size: 0.95em; }
+    footer { margin-top: 22px; color: var(--soft); font-size: 14px; }
+    @media (max-width: 640px) {
+      .wrap { padding-top: 20px; }
+      .actions { flex-direction: column; }
+      .button, .ghost { text-align: center; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <p class="kicker">Meta Global AI Developer Hackathon · Build for Your World</p>
+      <h1>Convoplex Retention Agent, built in Lagos for Nigerian retailers.</h1>
+      <p class="lede">A shop loses a regular, and the next message never goes out. This agent drafts the win-back on WhatsApp, with the real naira price, and answers in the language the customer asked for.</p>
+      <div class="actions">
+        <a class="button" href="/demo">View live demo</a>
+        <a class="ghost" href="https://github.com/vumoz/convoplex-retention-agent">GitHub repo</a>
+      </div>
+    </header>
+
+    <section>
+      <h2>The problem</h2>
+      <p>Nigerian provision shops, fabric stalls, and phone sellers keep their customers on WhatsApp, not on a website. When someone stops buying, the shopkeeper is already on the shop floor. There is no quiet hour to write a personal offer, check the shelf, and follow up in the customer’s own wording. Regulars lapse, and the bag of rice they used to buy goes to another shop.</p>
+    </section>
+
+    <section>
+      <h2>What the agent does</h2>
+      <p>It scores who has gone quiet, then writes a win-back with a discount taken from the shelf price, in naira. A promo card is drawn for that offer. A voice note is transcribed and answered like a typed reply. The default reply is formal English. A customer can opt in, by typing or by voice, to Broken English (Nigerian Pidgin), Igbo, Yoruba, or Hausa. Prices stay in ₦. Product names stay as they are on the shelf.</p>
+    </section>
+
+    <section>
+      <h2>Meta models</h2>
+      <ul>
+        <li><code>muse-spark-1.3</code> drafts the win-back and the reply, and calls the shop tools for stock, price, the offer, and the order.</li>
+        <li><code>muse-image-1.0</code> draws a text-free product photo. The naira prices are printed on afterwards so the card matches the offer.</li>
+        <li><code>muse-voice-transcribe-1.0</code> turns a WhatsApp voice note into text before the same reply path runs.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Try it</h2>
+      <p>The live demo is synthetic data only: fictional shops, customers, orders, and prices. Phone numbers are masked to the last two digits. The demo page cannot send a WhatsApp message or change the book. The admin dashboard stays at <a href="/admin">/admin</a>.</p>
+    </section>
+
+    <footer>
+      <p>Synthetic data. No customer list from a real shop is in this project.</p>
+    </footer>
+  </div>
+</body>
+</html>
