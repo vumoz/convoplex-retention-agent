@@ -9,6 +9,7 @@ from __future__ import annotations
 import hmac
 import json
 import logging
+import re
 import time
 from datetime import datetime, timezone
 
@@ -105,18 +106,22 @@ def require_admin(request: Request, settings) -> None:
     raise HTTPException(401, "admin token required")
 
 
+# Postgres rejects an unqualified `hits` here: the SET expression can see both
+# the existing row and EXCLUDED, so `hits = hits + 1` is ambiguous. SQLite
+# accepted it. Qualify the existing row. The other ON CONFLICT updates in this
+# repo already use `excluded.<column>`.
+USAGE_UPSERT_SQL = """
+INSERT INTO usage_counters (bucket, hits) VALUES (?, 1)
+ON CONFLICT(bucket) DO UPDATE SET hits = usage_counters.hits + 1
+WHERE usage_counters.hits < ?
+"""
+
+
 def consume_bucket(conn, bucket: str, limit: int) -> bool:
     """Increment a counter if it is still under the limit. False when it is not."""
     if limit <= 0:
         return False
-    cursor = conn.execute(
-        """
-        INSERT INTO usage_counters (bucket, hits) VALUES (?, 1)
-        ON CONFLICT(bucket) DO UPDATE SET hits = hits + 1
-        WHERE usage_counters.hits < ?
-        """,
-        (bucket, limit),
-    )
+    cursor = conn.execute(USAGE_UPSERT_SQL, (bucket, limit))
     ok = cursor.rowcount > 0
     conn.commit()
     return ok
@@ -127,15 +132,54 @@ def meta_bucket(now: datetime | None = None) -> str:
     return "meta:" + moment.strftime("%Y-%m-%d")
 
 
-def select_mode(settings, *, admin: bool, task: str, now: datetime | None = None) -> str:
-    """live, or mock when the daily cap is spent. Promo raises instead of drawing a stand-in."""
+def _log_counter_failure(exc: Exception) -> None:
+    """Record a counter failure without the database URL or a phone number."""
+    try:
+        configure_access_log()
+        text = re.sub(r"(?i)postgres(?:ql)?://\S+", "postgres://redacted", str(exc))
+        text = " ".join(text.split())[:300]
+        LOGGER.warning(json.dumps({"msg": "usage_counter_failed", "error": text}))
+    except Exception:
+        return
+
+
+def select_mode(
+    settings,
+    *,
+    admin: bool,
+    task: str,
+    now: datetime | None = None,
+    fail_open: bool = False,
+) -> str:
+    """live, or mock when the daily cap is spent. Promo raises instead of drawing a stand-in.
+
+    fail_open is the WhatsApp webhook path: a broken counter is logged and the
+    reply still goes out. A spent cap is not a broken counter.
+    """
     if settings.llm_mode != "live":
         return "mock"
     if admin:
         return "live"
-    conn = open_db(settings)
+    try:
+        conn = open_db(settings)
+    except Exception as exc:
+        if not fail_open:
+            raise
+        _log_counter_failure(exc)
+        return "live"
     try:
         allowed = consume_bucket(conn, meta_bucket(now), settings.meta_daily_cap)
+    except PromoCapError:
+        raise
+    except Exception as exc:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        if not fail_open:
+            raise
+        _log_counter_failure(exc)
+        return "live"
     finally:
         conn.close()
     if allowed:
@@ -162,7 +206,11 @@ def enforce_try_limit(request: Request, settings, now: float | None = None) -> N
 
 
 class CappedLLM:
-    """Webhook model calls: live until the daily cap, then the mock. Never fails the hook."""
+    """Webhook model calls: live until the daily cap, then the mock.
+
+    A failure in the counter is logged and the live model still runs. The
+    reply is not abandoned because the cap table could not be updated.
+    """
 
     def __init__(self, settings, live, mock):
         self.settings = settings
@@ -172,7 +220,7 @@ class CappedLLM:
     def complete(self, messages, *, tools, max_tokens):
         chosen = self.mock
         if self.settings.llm_mode == "live" and self.live is not None:
-            mode = select_mode(self.settings, admin=False, task="chat")
+            mode = select_mode(self.settings, admin=False, task="chat", fail_open=True)
             if mode == "live":
                 chosen = self.live
         return chosen.complete(messages, tools=tools, max_tokens=max_tokens)
