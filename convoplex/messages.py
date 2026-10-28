@@ -479,33 +479,41 @@ def accept_message(ctx: dict, order: dict, delivery: dict | None = None) -> str:
     )
 
 
-def confirm_hold_message(ctx: dict, product_name: str | None, price_ngn: int | None) -> str:
-    """Ask before treating a voice note, or a Broken English wan/won't, as a cancellation.
-
-    The offer stays. When the customer named a product, the price is in the question.
-    """
-    code = _code(ctx)
+def offer_price_clause(ctx: dict, product_name: str | None, price_ngn: int | None) -> str:
+    """The open-offer price in the customer's language, for example 'Mama Gold Rice 50kg na ₦76,014.'"""
     product = (product_name or "").strip()
-    price = naira(price_ngn) if price_ngn is not None and product else None
+    if not product or price_ngn is None:
+        return ""
+    price = naira(price_ngn)
+    code = _code(ctx)
     if code == "pcm":
-        if price:
-            return f"You wan buy am abi you no want am? {product} na {price}."
-        return "You wan buy am abi you no want am?"
+        return f"{product} na {price}."
     if code == "ig":
-        if price:
-            return f"Ị chọrọ ịzụta ya ka ị chọghị? {product} bụ {price}."
-        return "Ị chọrọ ịzụta ya ka ị chọghị?"
+        return f"{product} bụ {price}."
     if code == "yo":
-        if price:
-            return f"Ṣé o fẹ́ rà á tàbí o ò fẹ́? {product} jẹ́ {price}."
-        return "Ṣé o fẹ́ rà á tàbí o ò fẹ́?"
+        return f"{product} jẹ́ {price}."
     if code == "ha":
-        if price:
-            return f"Kana son siya ko ba ka so ba? {product} shi ne {price}."
-        return "Kana son siya ko ba ka so ba?"
-    if price:
-        return f"Do you want to buy it, or not? {product} is {price}."
-    return "Do you want to buy it, or not? I will keep this offer."
+        return f"{product} shi ne {price}."
+    return f"{product} is {price}."
+
+
+def confirm_hold_message(ctx: dict, product_name: str | None, price_ngn: int | None) -> str:
+    """One confirm question. The open-offer price is included when we have it."""
+    code = _code(ctx)
+    clause = offer_price_clause(ctx, product_name, price_ngn)
+    if code == "pcm":
+        ask = "You wan buy am abi you no want am?"
+    elif code == "ig":
+        ask = "Ị chọrọ ịzụta ya ka ị chọghị?"
+    elif code == "yo":
+        ask = "Ṣé o fẹ́ rà á tàbí o ò fẹ́?"
+    elif code == "ha":
+        ask = "Kana son siya ko ba ka so ba?"
+    else:
+        ask = "Do you want to buy it, or not?"
+    if clause:
+        return f"{ask} {clause}"
+    return ask
 
 
 def decline_message(ctx: dict) -> str:

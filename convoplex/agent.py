@@ -10,11 +10,26 @@ from dataclasses import dataclass, field
 from convoplex.actionlog import ActionLog
 from convoplex.context import agent_context
 from convoplex.languages import CONFIRM, guard_reply, message_asks_something_else, message_is_language_only
-from convoplex.llm import Completion, LLMError, ToolCall, classify_reply, purchase_is_ambiguous, split_intent
+from convoplex.integrations.whatsapp import (
+    CONFIRM_NO_ID,
+    CONFIRM_NO_TITLE,
+    CONFIRM_YES_ID,
+    CONFIRM_YES_TITLE,
+)
+from convoplex.llm import (
+    Completion,
+    LLMError,
+    ToolCall,
+    classify_reply,
+    explicit_refusal,
+    purchase_is_ambiguous,
+    split_intent,
+)
 from convoplex.messages import (
     accept_message,
     confirm_hold_message,
     decline_message,
+    offer_price_clause,
     delivery_fee_ngn,
     one_seasonal_hook,
     polish_acceptance,
@@ -39,6 +54,7 @@ class AgentResult:
     language: str = "en"
     tool_trace: list[str] = field(default_factory=list)
     llm_mode: str = "mock"
+    confirm_offer_id: int | None = None
 
 
 def draft_winback(
@@ -149,8 +165,9 @@ def _run(
         # chat API accepts ("none" is HTTP 400). A length finish must not
         # double the budget: that retry spent most of the live language switch.
         reply_kwargs = {"reasoning_effort": "minimal", "retry_on_length": False}
+    decision = _reply_decision(user_text, profile, log, customer_id, from_voice) if task == "reply" else None
 
-    for _round in range(1, MAX_ROUNDS + 1):
+    for _round in (() if decision else range(1, MAX_ROUNDS + 1)):
         try:
             completion = llm.complete(messages, tools=TOOLS, max_tokens=max_tokens, **reply_kwargs)
         except LLMError as exc:
@@ -227,9 +244,10 @@ def _run(
             )
             continue
     else:
-        raise LLMError(
-            "Muse Spark kept calling tools without a final message. Stopped after 6 rounds."
-        )
+        if decision is None:
+            raise LLMError(
+                "Muse Spark kept calling tools without a final message. Stopped after 6 rounds."
+            )
 
     raw = completion.content if completion and completion.content else ""
     text, intent = split_intent(raw)
@@ -239,15 +257,14 @@ def _run(
     elif task == "reply" and intent is None and user_text:
         intent = classify_reply(user_text)
 
-    ambiguous_buy = task == "reply" and purchase_is_ambiguous(user_text)
-    spoken_pcm = (profile.get("language") == "pcm")
-    # "wan" means want. A voice note that heard "won't", and any voice-only
-    # decline, keeps the offer until the customer confirms.
-    hold_for_confirm = task == "reply" and (
-        (ambiguous_buy and (from_voice or spoken_pcm))
-        or (from_voice and intent == "decline")
-    )
-    if task == "reply" and intent == "accept" and order is None and profile.get("open_offer") and not hold_for_confirm:
+    if decision == "accept":
+        intent = "accept"
+    elif decision == "decline":
+        intent = "decline"
+    elif decision == "confirm":
+        intent = "question"
+
+    if task == "reply" and intent == "accept" and order is None and profile.get("open_offer"):
         if not delivery:
             delivery = _required_delivery(conn, log, customer_id, profile, trace)
         order = _fallback_place(conn, log, customer_id, profile, trace, user_text or "")
@@ -256,18 +273,16 @@ def _run(
 
     if task == "reply":
         text = _strip_thread_greeting(text, profile.get("retailer_name") or "")
-    if task == "reply" and intent == "decline" and not hold_for_confirm:
+    if task == "reply" and intent == "decline":
         text = _without_payday(text) or decline_message(profile)
-    if hold_for_confirm:
+    confirm_offer_id = None
+    if decision == "confirm":
         intent = "question"
         order = None
         held = profile.get("open_offer") or {}
-        product_name = None
-        price_ngn = None
-        if held and (_message_names_product(user_text, held) or from_voice or ambiguous_buy):
-            product_name = held.get("product_name")
-            price_ngn = held.get("offer_price_ngn")
-        text = confirm_hold_message(profile, product_name, price_ngn)
+        text = confirm_hold_message(profile, held.get("product_name"), held.get("offer_price_ngn"))
+        if held.get("offer_id") is not None:
+            confirm_offer_id = int(held["offer_id"])
 
     if task == "winback" and offer and offer.get("ok") and "₦" not in text:
         text = winback_message(profile, offer)
@@ -284,6 +299,7 @@ def _run(
         if naira(int(order["total_ngn"])) not in text or not _states_arrival(text) or not fee_stated:
             text = accept_message(profile, order, delivery)
         text = polish_acceptance(text, profile, delivery, user_text)
+        text = _ensure_offer_price(text, profile)
 
     if switched_to:
         profile["language"] = switched_to
@@ -300,16 +316,19 @@ def _run(
     if task == "reply" and intent == "decline" and profile.get("open_offer"):
         mark_offer_declined(conn, int(profile["open_offer"]["offer_id"]))
 
+    payload = {
+        "customer_id": customer_id,
+        "task": task,
+        "direction": "out",
+        "content": text,
+        "intent": intent,
+    }
+    if confirm_offer_id is not None:
+        payload["confirm_offer_id"] = confirm_offer_id
     log.append(
         kind="message",
         actor="agent",
-        payload={
-            "customer_id": customer_id,
-            "task": task,
-            "direction": "out",
-            "content": text,
-            "intent": intent,
-        },
+        payload=payload,
     )
     return AgentResult(
         task=task,
@@ -321,6 +340,7 @@ def _run(
         language=profile.get("language") or "en",
         tool_trace=trace,
         llm_mode=getattr(llm, "mode", "mock"),
+        confirm_offer_id=confirm_offer_id,
     )
 
 
@@ -368,13 +388,76 @@ def _prior_tool_results(log: ActionLog, customer_id: int) -> dict:
     return found
 
 
-def _message_names_product(text: str | None, offer: dict) -> bool:
-    """Rice, Mama Gold, or the offer's own product name in the customer's words."""
-    low = (text or "").lower()
-    if re.search(r"\brice\b", low) or "mama gold" in low:
-        return True
-    name = (offer.get("product_name") or "").lower()
-    return bool(name and name in low)
+def _reply_decision(user_text: str | None, profile: dict, log: ActionLog, customer_id: int, from_voice: bool) -> str | None:
+    """accept, decline, confirm, or None to let the model decide.
+
+    A Broken English voice note that says "won't buy" is "wan buy" when an
+    offer is open. Other customers are asked once, then a repeat accepts.
+    """
+    if not (user_text or "").strip():
+        return None
+    choice = _button_choice(user_text)
+    if choice == "yes":
+        return "accept"
+    if choice == "no":
+        return "decline"
+    if explicit_refusal(user_text):
+        return "decline"
+    offer = profile.get("open_offer") or {}
+    if _pcm_voice_wants(user_text, from_voice, profile.get("language"), offer):
+        return "accept"
+    offer_id = offer.get("offer_id")
+    if purchase_is_ambiguous(user_text) and offer_id is not None:
+        if _confirm_already_asked(log, customer_id, int(offer_id)):
+            return "accept"
+        return "confirm"
+    return None
+
+
+def _button_choice(text: str | None) -> str | None:
+    folded = (text or "").strip().lower()
+    if folded in {CONFIRM_YES_ID, CONFIRM_YES_TITLE.lower()}:
+        return "yes"
+    if folded in {CONFIRM_NO_ID, CONFIRM_NO_TITLE.lower()}:
+        return "no"
+    return None
+
+
+def _pcm_voice_wants(text: str, from_voice: bool, language: str | None, offer: dict) -> bool:
+    """Transcriber writes Pidgin 'wan buy' as 'won't buy'. That is a yes."""
+    if not from_voice or language != "pcm" or not offer:
+        return False
+    if explicit_refusal(text):
+        return False
+    folded = (text or "").replace("’", "'").replace("‘", "'")
+    return bool(
+        re.search(
+            r"\b(?:won'?t|wont|wan|wanna)\b(?:\s+\w+){0,4}\s+\b(?:buy|take|get)\b",
+            folded,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _confirm_already_asked(log: ActionLog, customer_id: int, offer_id: int) -> bool:
+    last = None
+    for entry in log.read_all():
+        if entry.get("kind") != "message" or entry.get("actor") != "agent":
+            continue
+        payload = entry.get("payload") or {}
+        if int(payload.get("customer_id") or 0) != int(customer_id):
+            continue
+        if payload.get("direction") == "out":
+            last = payload
+    return bool(last and int(last.get("confirm_offer_id") or 0) == int(offer_id))
+
+
+def _ensure_offer_price(text: str, profile: dict) -> str:
+    held = profile.get("open_offer") or {}
+    clause = offer_price_clause(profile, held.get("product_name"), held.get("offer_price_ngn"))
+    if clause and clause not in (text or ""):
+        return f"{(text or '').rstrip()} {clause}".strip()
+    return text
 
 
 def _without_payday(text: str) -> str:
