@@ -82,7 +82,14 @@ def test_tool_round_trip_matches_documented_shape(shop, log_path):
     assert body["max_tokens"] >= MIN_TOOL_TOKENS
     assert body["max_tokens"] == MIN_TOOL_TOKENS
     names = [tool["function"]["name"] for tool in body["tools"]]
-    assert names == ["check_stock", "get_price", "create_offer", "place_order", "get_delivery_options"]
+    assert names == [
+        "check_stock",
+        "get_price",
+        "create_offer",
+        "place_order",
+        "get_delivery_options",
+        "set_language",
+    ]
     assert body["tools"] == TOOLS
     assert body["messages"][0]["role"] == "system"
     assert body["messages"][1]["role"] == "user"

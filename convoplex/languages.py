@@ -79,6 +79,46 @@ _ALIASES = {
     "harshen hausa": "ha",
 }
 
+# Ordinary words that sit one or two edits from a language name. Never fuzzy-match these.
+_STOPWORDS = frozenset(
+    {
+        "yes",
+        "rice",
+        "house",
+        "hello",
+        "broke",
+        "how",
+        "much",
+        "last",
+        "price",
+        "the",
+        "bag",
+        "shop",
+        "send",
+        "okay",
+        "thanks",
+        "thank",
+        "you",
+        "today",
+        "now",
+    }
+)
+
+# Canonical names used only for edit-distance. Exact aliases are checked first.
+_FUZZY = (
+    ("yoruba", "yo"),
+    ("igbo", "ig"),
+    ("hausa", "ha"),
+    ("english", "en"),
+    ("pidgin", "pcm"),
+    ("broken", "pcm"),
+    ("naija", "pcm"),
+)
+
+_SWITCH_CUES = frozenset(
+    {"speak", "switch", "change", "talk", "use", "want", "language", "lang", "asusu", "ede", "yare"}
+)
+
 _PLEASE = re.compile(r"^(?:please |abeg |biko )+|(?: please| abeg| biko)+$")
 
 _PIDGIN_WORD = re.compile(r"\bpidgin\b", re.IGNORECASE)
@@ -163,10 +203,71 @@ def interpret_language(value: str | None) -> dict | None:
         name = match.group("name").strip()
         if name in MENU_PHRASES:
             return {"action": "menu"}
-        picked = _ALIASES.get(name)
+        picked = _ALIASES.get(name) or _fuzzy_language(name)
+        if picked:
+            return {"action": "set", "language": picked}
+    words = folded.split()
+    if 0 < len(words) <= 4:
+        picked = _fuzzy_language(folded)
         if picked:
             return {"action": "set", "language": picked}
     return None
+
+
+def requested_language(value: str | None) -> str | None:
+    """A language the customer is asking to switch to, including a longer sentence.
+
+    Short voice mistakes are handled by interpret_language. A longer request such as
+    "please talk to me in Yoruba from now on" still names one language next to a cue.
+    """
+    choice = interpret_language(value)
+    if choice and choice["action"] == "set":
+        return choice["language"]
+    folded = _PLEASE.sub("", fold_language_text(value)).strip()
+    words = folded.split()
+    if not words or len(words) > 12 or not any(word in _SWITCH_CUES for word in words):
+        return None
+    for word in words:
+        coded = _ALIASES.get(word) or _fuzzy_language(word)
+        if coded:
+            return coded
+    return None
+
+
+def _fuzzy_language(name: str) -> str | None:
+    """Small edit distance for a single short token or a 1–4 word utterance."""
+    if not name or name in _STOPWORDS or name in MENU_PHRASES:
+        return None
+    if len(name) < 4 or len(name.split()) > 4:
+        return None
+    limit = 1 if len(name) <= 4 else 2
+    best_code = None
+    best_distance = limit + 1
+    for target, code in _FUZZY:
+        distance = _edit_distance(name, target)
+        if distance < best_distance:
+            best_code = code
+            best_distance = distance
+    if best_distance <= limit:
+        return best_code
+    return None
+
+
+def _edit_distance(left: str, right: str) -> int:
+    if left == right:
+        return 0
+    if not left:
+        return len(right)
+    if not right:
+        return len(left)
+    previous = list(range(len(right) + 1))
+    for i, left_char in enumerate(left, start=1):
+        current = [i]
+        for j, right_char in enumerate(right, start=1):
+            cost = 0 if left_char == right_char else 1
+            current.append(min(current[-1] + 1, previous[j] + 1, previous[j - 1] + cost))
+        previous = current
+    return previous[-1]
 
 
 def language_list_interactive() -> dict:

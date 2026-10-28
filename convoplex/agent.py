@@ -135,6 +135,7 @@ def _run(
     delivery: dict | None = (prior or {}).get("get_delivery_options")
     trace: list[str] = []
     completion: Completion | None = None
+    switched_to: str | None = None
 
     for _round in range(1, MAX_ROUNDS + 1):
         try:
@@ -165,6 +166,9 @@ def _run(
                 },
             )
             result = execute_tool(conn, call.name, call.arguments)
+            if call.name == "set_language" and result.get("ok"):
+                switched_to = str(result["language"])
+                profile["language"] = switched_to
             if call.name == "create_offer" and result.get("ok"):
                 offer = result
             if call.name == "place_order" and result.get("ok"):
@@ -231,8 +235,12 @@ def _run(
             text = accept_message(profile, order, delivery)
         text = polish_acceptance(text, profile, delivery, user_text)
 
-    from convoplex.languages import guard_reply
+    from convoplex.languages import CONFIRM, guard_reply
 
+    if switched_to:
+        profile["language"] = switched_to
+        confirmation = CONFIRM[switched_to]
+        text = confirmation
     text = guard_reply(text, profile.get("language"))
     if task == "winback" and offer and offer.get("ok"):
         mark_offer_sent(conn, int(offer["offer_id"]), text, language=profile.get("language"))

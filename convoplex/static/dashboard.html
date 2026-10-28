@@ -906,7 +906,10 @@
         return `${payload.model} · offer ${payload.offer_id} · ${payload.latency_ms} ms`;
       }
       const tail = payload.wamid_tail ? ` · …${payload.wamid_tail}` : "";
-      if (entry.kind === "whatsapp_send") return `${payload.kind || "send"} · ${payload.to_masked || ""}${tail}`;
+      if (entry.kind === "whatsapp_send") {
+        const said = payload.body || payload.note || payload.caption || payload.kind || "send";
+        return `${said} · ${payload.to_masked || ""}${tail}`;
+      }
       if (entry.kind === "whatsapp_status") return `${payload.status || "status"} · ${payload.to_masked || ""}${tail}`;
       if (entry.kind === "whatsapp_inbound") return `${payload.kind || "inbound"} · ${payload.from_masked || ""}${tail}`;
       if (entry.kind === "tool_call") return payload.name || "tool";
