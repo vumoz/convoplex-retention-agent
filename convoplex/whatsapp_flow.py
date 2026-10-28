@@ -46,6 +46,8 @@ from convoplex.integrations.whatsapp import (
 )
 from convoplex.languages import (
     CONFIRM,
+    VOICE_RETRY,
+    guard_reply,
     interpret_language,
     language_list_interactive,
     save_language,
@@ -285,12 +287,21 @@ def deliver(
     image: bytes | None = None,
     caption: str | None = None,
     now: datetime | None = None,
+    session_open: bool = False,
+    language: str | None = None,
 ) -> dict:
-    """Send free-form text or an image when the window is open, otherwise the template."""
+    """Send free-form text or an image when the window is open, otherwise the template.
+
+    session_open is for a reply to a message we just accepted. The customer
+    wrote moments ago, so the 24-hour window is open even if the stored stamp
+    was missed or overwritten.
+    """
     moment = now or now_utc()
     client = WhatsAppClient(settings, channel=channel, http=http)
     demo = settings.whatsapp_demo_to or ""
-    open_now = window_open(store.load().get("last_inbound_at"), moment)
+    open_now = session_open or window_open(store.load().get("last_inbound_at"), moment)
+    if kind == "text":
+        text = guard_reply(text, language)
     if kind == "image" and open_now:
         if not image:
             raise WhatsAppError("Generate the promo card before sending it on WhatsApp.")
@@ -584,21 +595,28 @@ def _process_one(
                 return
             result = handle_reply(conn, log, llm, customer_id, text, max_tokens=max_tokens)
         elif message.kind == "audio":
-            text, result = _audio_reply(
-                settings,
-                conn,
-                log,
-                llm,
-                message,
-                customer_id,
-                http=http,
-                asr_http=asr_http,
-                max_tokens=max_tokens,
-            )
+            try:
+                text, result = _audio_reply(
+                    settings,
+                    conn,
+                    log,
+                    llm,
+                    message,
+                    customer_id,
+                    http=http,
+                    asr_http=asr_http,
+                    max_tokens=max_tokens,
+                )
+            except Exception as exc:
+                _log_failure(settings, log, message, exc)
+                _send_voice_fallback(settings, channel, log, store, conn, http, customer_id)
+                return
             if interpret_language(text):
                 _language_turn(settings, channel, log, store, conn, http, customer_id, text)
                 return
             if result is None:
+                _log_failure(settings, log, message, WhatsAppError("The voice note had no words."))
+                _send_voice_fallback(settings, channel, log, store, conn, http, customer_id)
                 return
         else:
             return
@@ -630,6 +648,8 @@ def _process_one(
             message_seq=seq,
             kind="text",
             text=outbound,
+            session_open=True,
+            language=result.language,
         )
     except SendBlocked as exc:
         _log_failure(settings, log, message, exc)
@@ -687,10 +707,55 @@ def _language_turn(settings, channel, log, store, conn, http, customer_id: int, 
                 message_seq=None,
                 kind="text",
                 text=confirmation,
+                session_open=True,
+                language=code,
             )
         except SendBlocked as exc:
             _log_failure(settings, log, _stub_message(text), exc)
     return True
+
+
+def _customer_language(conn, customer_id: int) -> str:
+    row = conn.execute("SELECT language FROM customers WHERE id = ?", (customer_id,)).fetchone()
+    if row is None or not row["language"]:
+        return "en"
+    return str(row["language"])
+
+
+def _send_voice_fallback(settings, channel, log, store, conn, http, customer_id: int) -> None:
+    """A voice note always gets a reply, in the customer's language."""
+    language = _customer_language(conn, customer_id)
+    text = VOICE_RETRY.get(language) or VOICE_RETRY["en"]
+    log.append(
+        kind="message",
+        actor="agent",
+        payload={
+            "customer_id": customer_id,
+            "task": "reply",
+            "direction": "out",
+            "content": text,
+            "intent": None,
+            "language": language,
+        },
+    )
+    if channel != "whatsapp":
+        return
+    try:
+        deliver(
+            settings,
+            channel,
+            log,
+            store,
+            http,
+            customer_id=customer_id,
+            message_seq=None,
+            kind="text",
+            text=text,
+            session_open=True,
+            language=language,
+        )
+    except (SendBlocked, WhatsAppError) as exc:
+        _log_failure(settings, log, _stub_message(text), exc)
 
 
 def _stub_message(text: str):
@@ -706,11 +771,14 @@ def _stub_message(text: str):
 
 
 def _send_language_menu(settings, channel, log, store, http, customer_id: int) -> None:
+    """They just asked, so the session is open. Send the list, not hello_world."""
     from convoplex.integrations.whatsapp import WhatsAppClient
 
-    moment = now_utc()
-    inbound = store.load().get("last_inbound_at")
-    if not isinstance(inbound, str) or not window_open(inbound, moment):
+    try:
+        client = WhatsAppClient(settings, channel=channel, http=http)
+        client.send_interactive(settings.whatsapp_demo_to, language_list_interactive())
+    except (SendBlocked, WhatsAppError) as exc:
+        _log_failure(settings, log, _stub_message("language"), exc)
         try:
             deliver(
                 settings,
@@ -721,21 +789,12 @@ def _send_language_menu(settings, channel, log, store, http, customer_id: int) -
                 customer_id=customer_id,
                 message_seq=None,
                 kind="text",
-                text="Reply LANGUAGE when the chat is open and I will show the language list.",
+                text="Reply with English, Broken English, Igbo, Yoruba, or Hausa.",
+                session_open=True,
+                language="en",
             )
-        except SendBlocked:
+        except (SendBlocked, WhatsAppError):
             return
-        return
-    try:
-        client = WhatsAppClient(settings, channel=channel, http=http)
-        client.send_interactive(settings.whatsapp_demo_to, language_list_interactive())
-    except (SendBlocked, WhatsAppError) as exc:
-        _log_failure(
-            settings,
-            log,
-            _stub_message("language"),
-            exc,
-        )
 
 
 def _latest_agent_seq(log: ActionLog, customer_id: int) -> int | None:

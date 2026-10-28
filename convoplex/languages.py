@@ -60,17 +60,43 @@ MENU_PHRASES = frozenset(
 
 _ALIASES = {
     "english": "en",
+    "formal english": "en",
+    "standard english": "en",
     "ingilishi": "en",
     "broken": "pcm",
     "broken english": "pcm",
     "pidgin": "pcm",
     "naija": "pcm",
     "igbo": "ig",
+    "ibo": "ig",
     "asusu igbo": "ig",
+    "igbo language": "ig",
     "yoruba": "yo",
     "ede yoruba": "yo",
+    "yoruba language": "yo",
     "hausa": "ha",
+    "hausa language": "ha",
     "harshen hausa": "ha",
+}
+
+_PLEASE = re.compile(r"^(?:please |abeg |biko )+|(?: please| abeg| biko)+$")
+
+_PIDGIN_WORD = re.compile(r"\bpidgin\b", re.IGNORECASE)
+
+_REFUSAL = re.compile(
+    r"\b(?:no sabi|don'?t speak|do not speak|cannot speak|can'?t speak|i no fit speak)\b"
+    r".{0,40}\b(?:yoruba|igbo|ibo|hausa|english|broken english|pidgin)\b"
+    r"|\b(?:yoruba|igbo|ibo|hausa|english|broken english|pidgin)\b.{0,40}"
+    r"\b(?:no sabi|don'?t speak|do not speak|cannot speak|can'?t speak|i no fit speak)\b",
+    re.IGNORECASE,
+)
+
+VOICE_RETRY = {
+    "en": "I didn't catch that voice note. Please type it or send it again.",
+    "pcm": "I no hear that voice note well. Abeg type am or send am again.",
+    "ig": "Anụghị m voice note ah nke ọma. Biko dee ya ma ọ bụ zigharịa ya.",
+    "yo": "Mi ò gbọ́ voice note náà kedere. Jọ̀wọ́ kọ ọ́ tàbí rán an padà.",
+    "ha": "Ban ji voice note ɗin ba. Don Allah a rubuta shi ko a sake aikawa.",
 }
 
 _CHANGE = re.compile(
@@ -124,6 +150,7 @@ def interpret_language(value: str | None) -> dict | None:
         if code in LANGUAGES:
             return {"action": "set", "language": code}
     folded = fold_language_text(raw)
+    folded = _PLEASE.sub("", folded).strip()
     if not folded:
         return None
     if folded in MENU_PHRASES:
@@ -158,6 +185,23 @@ def language_list_interactive() -> dict:
         },
         "action": {"button": "Languages", "sections": [{"title": "Languages", "rows": rows}]},
     }
+
+
+def scrub_customer_text(text: str) -> str:
+    """Customer-facing copy says Broken English, never pidgin."""
+    return _PIDGIN_WORD.sub("Broken English", text or "")
+
+
+def guard_reply(text: str, language: str | None) -> str:
+    """Drop a refusal to speak a supported language. The reply stays in that language."""
+    cleaned = scrub_customer_text(text)
+    if _REFUSAL.search(cleaned):
+        try:
+            code = clean_language(language)
+        except ValueError:
+            code = "en"
+        return CONFIRM[code]
+    return cleaned
 
 
 def save_language(conn, customer_id: int, language: str, *, channel: str, when: str | None = None) -> str:

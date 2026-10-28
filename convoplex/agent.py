@@ -231,6 +231,9 @@ def _run(
             text = accept_message(profile, order, delivery)
         text = polish_acceptance(text, profile, delivery, user_text)
 
+    from convoplex.languages import guard_reply
+
+    text = guard_reply(text, profile.get("language"))
     if task == "winback" and offer and offer.get("ok"):
         mark_offer_sent(conn, int(offer["offer_id"]), text, language=profile.get("language"))
         offer = {**offer, "status": "sent", "message": text}
