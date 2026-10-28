@@ -38,7 +38,9 @@ def test_voice_aliases_and_short_phrases_match_after_normalizing():
 
 def test_prompt_never_refuses_a_supported_language_or_says_pidgin():
     lowered = _RULES.lower()
-    assert "pidgin" not in lowered
+    # The glossary may name the language once. A reply still must not say it.
+    assert "pidgin" not in lowered.replace("nigerian pidgin", "")
+    assert "the only name you may use in a message is broken english" in lowered
     assert "broken english" in lowered
     assert "never tell the customer you cannot speak" in lowered
     refused = "Chinyere, I no sabi Yoruba, I go talk for pidgin wey you understand."
