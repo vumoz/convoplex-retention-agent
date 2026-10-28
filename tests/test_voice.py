@@ -162,11 +162,9 @@ def test_voice_route_mock_reply_flow(shop, tmp_path):
     declined = _voice(client, "decline-note.wav", 1)
     assert declined.status_code == 200
     assert declined.json()["transcript"] == MOCK_DECLINE
-    # A decline heard only on a voice note asks first. The offer stays held.
-    assert declined.json()["intent"] == "question"
+    assert declined.json()["intent"] == "decline"
     assert declined.json()["order"] is None
-    assert "You wan buy am abi you no want am?" in declined.json()["message"]
-    assert shop.execute("SELECT status FROM offers WHERE customer_id = 1").fetchone()["status"] == "sent"
+    assert shop.execute("SELECT status FROM offers WHERE customer_id = 1").fetchone()["status"] == "declined"
 
     asked = _voice(client, "how-much.wav", 1)
     assert asked.json()["intent"] == "question"

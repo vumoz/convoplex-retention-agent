@@ -50,6 +50,8 @@ DECLINE = (
     "maybe next",
     "not interested",
     "i no need",
+    "i no go buy",
+    "abeg no",
     "do not",
     "don't",
     "cancel",
@@ -66,6 +68,19 @@ class LLMError(RuntimeError):
     def __init__(self, message: str, *, calls: list | None = None):
         super().__init__(message)
         self.calls = list(calls or [])
+
+
+_EXPLICIT_NO = re.compile(
+    r"\b(?:i no want|i no go buy|abeg no|no thanks|no thank you|not now|not interested|cancel)\b"
+    r"|(?<![a-z'])\bno\b(?!\s+wahala)",
+    re.IGNORECASE,
+)
+
+
+def explicit_refusal(text: str | None) -> bool:
+    """A clear no. 'won't' is not one of these: in Broken English it is often 'wan'."""
+    folded = (text or "").replace("’", "'").replace("‘", "'")
+    return bool(_EXPLICIT_NO.search(folded))
 
 
 def purchase_is_ambiguous(text: str | None) -> bool:

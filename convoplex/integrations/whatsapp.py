@@ -282,6 +282,26 @@ def build_send_template_request(
     }
 
 
+CONFIRM_YES_ID = "buy_yes"
+CONFIRM_NO_ID = "buy_no"
+CONFIRM_YES_TITLE = "Yes, I want it"
+CONFIRM_NO_TITLE = "No"
+
+
+def confirm_purchase_interactive(body: str) -> dict:
+    """Reply buttons for a one-time purchase confirm. Titles stay within 20 characters."""
+    return {
+        "type": "button",
+        "body": {"text": (body or "")[:1024]},
+        "action": {
+            "buttons": [
+                {"type": "reply", "reply": {"id": CONFIRM_YES_ID, "title": CONFIRM_YES_TITLE}},
+                {"type": "reply", "reply": {"id": CONFIRM_NO_ID, "title": CONFIRM_NO_TITLE}},
+            ]
+        },
+    }
+
+
 def build_send_interactive_request(
     phone_number_id: str,
     to: str,

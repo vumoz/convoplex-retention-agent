@@ -707,27 +707,82 @@ def _process_one(
         outbound = result.message
         if hint:
             outbound = f"{outbound.rstrip()}\n\n{hint}"
-        try:
-            deliver(
-                settings,
-                channel,
-                log,
-                store,
-                http,
-                customer_id=customer_id,
-                message_seq=seq,
-                kind="text",
-                text=outbound,
-                session_open=True,
-                language=result.language,
-                started=started,
-                turn=turn,
-            )
-        except SendBlocked as exc:
-            _log_failure(settings, log, message, exc)
+        if getattr(result, "confirm_offer_id", None) and _send_confirm_buttons(
+            settings,
+            channel,
+            log,
+            store,
+            http,
+            customer_id=customer_id,
+            message_seq=seq,
+            text=outbound,
+            started=started,
+            turn=turn,
+        ):
+            pass
+        else:
+            try:
+                deliver(
+                    settings,
+                    channel,
+                    log,
+                    store,
+                    http,
+                    customer_id=customer_id,
+                    message_seq=seq,
+                    kind="text",
+                    text=outbound,
+                    session_open=True,
+                    language=result.language,
+                    started=started,
+                    turn=turn,
+                )
+            except SendBlocked as exc:
+                _log_failure(settings, log, message, exc)
     finally:
         if channel == "whatsapp" and not turn["delivered"]:
             _log_unsent(settings, log, message, turn, started)
+
+
+def _send_confirm_buttons(
+    settings,
+    channel,
+    log,
+    store,
+    http,
+    *,
+    customer_id: int,
+    message_seq: int | None,
+    text: str,
+    started: float | None,
+    turn: dict | None,
+) -> bool:
+    """WhatsApp reply buttons, then the same words as text if buttons fail."""
+    from convoplex.integrations.whatsapp import WhatsAppClient, confirm_purchase_interactive
+
+    if channel != "whatsapp":
+        return False
+    try:
+        client = WhatsAppClient(settings, channel=channel, http=http)
+        result = client.send_interactive(settings.whatsapp_demo_to, confirm_purchase_interactive(text))
+    except (SendBlocked, WhatsAppError):
+        return False
+    remember_send(
+        settings,
+        log,
+        store,
+        customer_id=customer_id,
+        message_seq=message_seq,
+        wamid_hash=result.wamid_hash,
+        wamid_tail=result.wamid_tail,
+        kind="interactive",
+        note="",
+        caption=None,
+        body=text,
+        e2e_ms=_e2e_ms(started),
+    )
+    _mark_delivered(turn)
+    return True
 
 
 def _language_turn(
