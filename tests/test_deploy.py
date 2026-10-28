@@ -132,9 +132,11 @@ def test_admin_token_locks_mutations_and_leaves_try_it_open(shop, tmp_path):
     assert client.post("/v1/customers/1/whatsapp").status_code == 401
     assert client.post("/v1/offers/1/whatsapp").status_code == 401
     assert client.post("/v1/admin/login", json={"token": "wrong"}).status_code == 401
-
-    win = client.post("/v1/customers/1/winback")
-    assert win.status_code == 200
+    assert client.post("/v1/customers/1/winback").status_code == 401
+    assert client.post("/v1/customers/1/reply", json={"text": "How much last price?"}).status_code == 401
+    assert client.post("/v1/customers/1/language", json={"language": "ha"}).status_code == 401
+    assert client.post("/v1/offers/1/promo-card").status_code == 401
+    assert client.post("/v1/voice/transcribe").status_code == 401
 
     bearer = {"Authorization": "Bearer s3cret"}
     switched = client.post("/v1/whatsapp/channel", json={"channel": "simulator"}, headers=bearer)
@@ -150,6 +152,8 @@ def test_admin_token_locks_mutations_and_leaves_try_it_open(shop, tmp_path):
     mapped = client.post("/v1/whatsapp/customer", json={"customer_id": 1})
     assert mapped.status_code == 200
     assert mapped.json()["demo_customer_id"] == 1
+    win = client.post("/v1/customers/1/winback")
+    assert win.status_code == 200
 
 
 def test_try_it_limit_is_per_ip_and_webhook_is_not_counted(shop, tmp_path):
@@ -189,7 +193,7 @@ def test_live_cap_falls_back_for_chat_and_blocks_public_promo(shop, tmp_path):
     admin = TestClient(
         _app(shop, tmp_path, llm_mode="mock", meta_daily_cap=0, admin_token="s3cret")
     )
-    drafted = admin.post("/v1/customers/2/winback")
+    drafted = admin.post("/v1/customers/2/winback", headers={"Authorization": "Bearer s3cret"})
     offer_id = drafted.json()["offer"]["offer_id"]
     card = admin.post(
         f"/v1/offers/{offer_id}/promo-card",
@@ -228,8 +232,11 @@ def test_healthz_security_headers_and_oversized_body(shop, tmp_path):
     assert healthz.headers["x-content-type-options"] == "nosniff"
     assert healthz.headers["x-frame-options"] == "DENY"
     assert "unsafe-inline" in healthz.headers["content-security-policy"]
-    page = client.get("/")
+    page = client.get("/admin")
     assert "admin-login" in page.text
+    landing = client.get("/")
+    assert "View live demo" in landing.text
+    assert "admin-login" not in landing.text
     assert "credentials" in page.text
 
     denied = client.post(

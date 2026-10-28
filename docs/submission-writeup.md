@@ -1,0 +1,13 @@
+# Convoplex Retention Agent
+
+Nigerian shops do not lose customers in a dashboard. They lose them in the gap after the last bag of rice, the last parcel of Ankara, the last phone. The regular is on WhatsApp. The shopkeeper is on the shop floor. Nobody writes the follow-up, so the next purchase happens somewhere else.
+
+Convoplex Retention Agent is that follow-up. It is built in Lagos for retailers in Lagos, Abuja, and Port Harcourt. The agent scores who has gone quiet and why, then drafts one win-back with a discount taken from the shelf price, in naira, not from a number the model invented. If the customer accepts, it places the order, states pickup or same-city delivery, and decrements stock. A promo card shows the same figures: Muse Image draws a text-free product photo, and the shop name and prices are printed afterwards so the card cannot disagree with the offer.
+
+The conversation is WhatsApp-first. A typed reply and a voice note take the same path. Muse Voice transcribes the note, including a request to change language. Formal English is the default. The customer can opt in, by text or by voice, to Broken English (Nigerian Pidgin), Igbo, Yoruba, or Hausa. A short or misheard name still switches, and the confirmation comes back in the new language. Prices stay in ₦. Product names stay as they are on the shelf. Igbo, Yoruba, and Hausa lines are a first draft and still need native-speaker review.
+
+Three Meta models do the work. `muse-spark-1.3` runs the tool loop: stock, price, the offer, the order, delivery, and `set_language`. WhatsApp replies ask for the shortest reasoning effort the model accepts, and a message that only changes language does not wait on a second completion. `muse-voice-transcribe-1.0` turns the voice note into text. `muse-image-1.0` paints the product on the promo card. With no API key, a deterministic mock keeps the same shape so the demo and the tests run offline.
+
+The public site is a landing page plus a read-only demo of 500 synthetic customers. Phone numbers show the last two digits only. Nothing on that page can send a message or edit the book. The hash-chained action log is there so a judge can see each tool call and model call. Live WhatsApp goes only to one allow-listed demo phone, and only the template `hello_world` goes out once the 24-hour window has closed.
+
+The impact we are aiming at is simple: a quiet regular gets one honest offer, in their language, with a price the shop can actually honour. What is next is native-speaker review of the Igbo, Yoruba, and Hausa copy, and a longer trial with one real shop that opts in, still without putting a customer list in the repo.

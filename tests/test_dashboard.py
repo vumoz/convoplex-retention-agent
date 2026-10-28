@@ -6,7 +6,7 @@ from tests.test_api import _app
 
 def test_dashboard_page_and_thread(shop, tmp_path):
     client = TestClient(_app(shop, tmp_path))
-    page = client.get("/")
+    page = client.get("/admin")
     assert page.status_code == 200
     assert "text/html" in page.headers["content-type"]
     html = page.text

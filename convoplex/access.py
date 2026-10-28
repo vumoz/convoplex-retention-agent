@@ -1,7 +1,8 @@
 """Public-demo guards: admin token, per-IP try-it limit, daily Meta cap.
 
-Unset ADMIN_TOKEN leaves local runs and the test suite open. The WhatsApp
-webhook is not gated here; signature checks stay on the route.
+When ADMIN_TOKEN is set, every shop write requires it. Unset ADMIN_TOKEN
+leaves local runs and the test suite open. The WhatsApp webhook is not
+gated here; signature checks stay on the route.
 """
 
 from __future__ import annotations

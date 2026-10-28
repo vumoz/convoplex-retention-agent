@@ -7,11 +7,12 @@ channel is whatsapp and the recipient is the allow-listed demo phone.
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, datetime, timezone
 from pathlib import Path
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -41,11 +42,13 @@ from convoplex.integrations.images import (
     load_promo_blob,
     promo_filename,
     remember_promo,
+    render_promo_card,
 )
 from convoplex.integrations.voice import VoiceError, transcribe_audio
 from convoplex.integrations.whatsapp import (
     SendBlocked,
     WhatsAppError,
+    mask_phone,
     normalize_phone,
     parse_inbound,
     parse_statuses,
@@ -71,6 +74,17 @@ from convoplex.whatsapp_flow import (
 from convoplex.whatsapp_state import stamp_from_message
 
 DASHBOARD = Path(__file__).resolve().parent / "static" / "dashboard.html"
+LANDING = Path(__file__).resolve().parent / "static" / "landing.html"
+_SAMPLE_PROMO = {
+    "retailer_name": "Mama Nkechi Provisions",
+    "city": "Lagos",
+    "product_name": "Mama Gold Rice 50kg",
+    "offer_price_ngn": 70200,
+    "list_price_ngn": 78000,
+    "discount_percent": 10,
+    "category": "provisions",
+    "language": "en",
+}
 MAX_AUDIO_BYTES = 20 * 1024 * 1024
 
 
@@ -173,10 +187,32 @@ def create_app(settings: Settings | None = None, *, generate_if_missing: bool = 
             conn.close()
 
     @app.get("/")
-    def dashboard_page():
-        if not DASHBOARD.exists():
-            raise HTTPException(404, "dashboard is not installed")
-        return FileResponse(DASHBOARD, headers={"Cache-Control": "no-store"})
+    def landing_page():
+        if not LANDING.exists():
+            raise HTTPException(404, "landing page is not installed")
+        return FileResponse(LANDING, headers={"Cache-Control": "no-store"})
+
+    @app.get("/admin")
+    def admin_page():
+        return _dashboard_response("admin")
+
+    @app.get("/dashboard")
+    def dashboard_alias():
+        return _dashboard_response("admin")
+
+    @app.get("/demo")
+    def demo_page():
+        return _dashboard_response("demo")
+
+    @app.get("/demo/promo-card")
+    def demo_promo_card():
+        """A fixed synthetic card. Nothing is written to the shop or the action log."""
+        image = render_promo_card(_SAMPLE_PROMO)
+        return Response(
+            content=image,
+            media_type="image/webp",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
 
     @app.get("/healthz")
     def healthz():
@@ -251,7 +287,7 @@ def create_app(settings: Settings | None = None, *, generate_if_missing: bool = 
         ).fetchall()
         return {
             "synthetic": True,
-            "retailers": [dict(row) for row in rows],
+            "retailers": [_public_retailer(row) for row in rows],
         }
 
     @app.get("/v1/customers/at-risk")
@@ -300,17 +336,19 @@ def create_app(settings: Settings | None = None, *, generate_if_missing: bool = 
         return {
             "customer_id": customer_id,
             "customer": _public(row),
-            "messages": _thread_messages(
-                app.state.log.read_all(),
-                customer_id,
-                store_for(settings).statuses(),
+            "messages": scrub_phones(
+                _thread_messages(
+                    app.state.log.read_all(),
+                    customer_id,
+                    store_for(settings).statuses(),
+                )
             ),
             "offer": _latest_offer(conn, customer_id),
             "order": _latest_offer_order(conn, customer_id),
             "synthetic": True,
         }
 
-    @app.post("/v1/customers/{customer_id}/winback", dependencies=[Depends(try_dep)])
+    @app.post("/v1/customers/{customer_id}/winback", dependencies=[Depends(admin_dep), Depends(try_dep)])
     def winback(customer_id: int, request: Request, conn=Depends(get_conn)):
         try:
             result = draft_winback(
@@ -326,7 +364,7 @@ def create_app(settings: Settings | None = None, *, generate_if_missing: bool = 
             raise HTTPException(502, str(exc)) from exc
         return _agent_body(result)
 
-    @app.post("/v1/customers/{customer_id}/reply", dependencies=[Depends(try_dep)])
+    @app.post("/v1/customers/{customer_id}/reply", dependencies=[Depends(admin_dep), Depends(try_dep)])
     def reply(customer_id: int, body: ReplyIn, request: Request, conn=Depends(get_conn)):
         try:
             result = handle_reply(
@@ -350,12 +388,20 @@ def create_app(settings: Settings | None = None, *, generate_if_missing: bool = 
     @app.get("/v1/actions")
     def actions(limit: int = Query(100, ge=1, le=1000)):
         entries = app.state.log.read_all()
-        return {"entries": scrub_wamids(entries[-limit:]), "count": len(entries)}
+        shown = scrub_phones(scrub_wamids(entries[-limit:]))
+        return {"entries": shown, "count": len(entries)}
+
+    def _verify_body() -> dict:
+        result = app.state.log.verify()
+        return {"ok": result.ok, "entries": result.entries, "error": result.error, "seq": result.seq}
+
+    @app.get("/v1/actions/verify")
+    def verify_actions_get():
+        return _verify_body()
 
     @app.post("/v1/actions/verify")
     def verify_actions():
-        result = app.state.log.verify()
-        return {"ok": result.ok, "entries": result.entries, "error": result.error, "seq": result.seq}
+        return _verify_body()
 
     @app.post("/v1/demo/reset", dependencies=[Depends(admin_dep)])
     def reset_demo():
@@ -524,7 +570,7 @@ def create_app(settings: Settings | None = None, *, generate_if_missing: bool = 
             "statuses": status_count,
         }
 
-    @app.post("/v1/voice/transcribe", dependencies=[Depends(try_dep)])
+    @app.post("/v1/voice/transcribe", dependencies=[Depends(admin_dep), Depends(try_dep)])
     def voice_transcribe(
         http_request: Request,
         request: str = Form(...),
@@ -604,7 +650,7 @@ def create_app(settings: Settings | None = None, *, generate_if_missing: bool = 
         response.update(_agent_body(result))
         return response
 
-    @app.post("/v1/offers/{offer_id}/promo-card", dependencies=[Depends(try_dep)])
+    @app.post("/v1/offers/{offer_id}/promo-card", dependencies=[Depends(admin_dep), Depends(try_dep)])
     def promo_card(offer_id: int, request: Request, conn=Depends(get_conn)):
         offer = load_offer_for_card(conn, offer_id)
         if offer is None:
@@ -814,7 +860,7 @@ def _public(row: dict) -> dict:
     return {
         "id": row["id"],
         "full_name": row["full_name"],
-        "phone": row["phone"],
+        "phone": mask_phone(row["phone"]),
         "city": row["city"],
         "area": row["area"],
         "language": row["language"],
@@ -836,6 +882,43 @@ def _public(row: dict) -> dict:
         "synthetic": True,
         "synthetic_archetype": row["synthetic_archetype"],
     }
+
+
+def _public_retailer(row) -> dict:
+    item = dict(row)
+    if item.get("phone"):
+        item["phone"] = mask_phone(item["phone"])
+    return item
+
+
+_PHONE_IN_TEXT = re.compile(r"(?<!\d)\+?\d{10,15}(?!\d)")
+
+
+def scrub_phones(value):
+    """Mask phone-shaped strings in public JSON. Prices and short ids stay."""
+    if isinstance(value, str):
+        return _PHONE_IN_TEXT.sub(lambda match: mask_phone(match.group(0)), value)
+    if isinstance(value, list):
+        return [scrub_phones(item) for item in value]
+    if isinstance(value, dict):
+        cleaned = {}
+        for key, item in value.items():
+            if key in {"phone", "from_phone", "to", "demo_to", "recipient"} and isinstance(item, str):
+                cleaned[key] = mask_phone(item)
+            else:
+                cleaned[key] = scrub_phones(item)
+        return cleaned
+    return value
+
+
+def _dashboard_response(mode: str) -> HTMLResponse:
+    if mode not in {"admin", "demo"}:
+        mode = "admin"
+    if not DASHBOARD.exists():
+        raise HTTPException(404, "dashboard is not installed")
+    html = DASHBOARD.read_text(encoding="utf-8")
+    html = html.replace('data-mode="admin"', f'data-mode="{mode}"', 1)
+    return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
 
 def _agent_body(result) -> dict:
