@@ -709,6 +709,7 @@ def _process_one(
             customer_id=customer_id,
             message_seq=seq,
             text=outbound,
+            language=getattr(result, "language", None),
             started=started,
             turn=turn,
         ):
@@ -747,6 +748,7 @@ def _send_confirm_buttons(
     customer_id: int,
     message_seq: int | None,
     text: str,
+    language: str | None = None,
     started: float | None,
     turn: dict | None,
 ) -> bool:
@@ -757,7 +759,10 @@ def _send_confirm_buttons(
         return False
     try:
         client = WhatsAppClient(settings, channel=channel, http=http)
-        result = client.send_interactive(settings.whatsapp_demo_to, confirm_purchase_interactive(text))
+        result = client.send_interactive(
+            settings.whatsapp_demo_to,
+            confirm_purchase_interactive(text, language=language),
+        )
     except (SendBlocked, WhatsAppError):
         return False
     remember_send(

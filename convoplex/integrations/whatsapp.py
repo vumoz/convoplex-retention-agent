@@ -284,19 +284,47 @@ def build_send_template_request(
 
 CONFIRM_YES_ID = "buy_yes"
 CONFIRM_NO_ID = "buy_no"
-CONFIRM_YES_TITLE = "Yes, I want it"
-CONFIRM_NO_TITLE = "No"
+# Titles are at most 20 characters, which is WhatsApp's reply-button limit.
+CONFIRM_LABELS = {
+    "en": ("Yes, hold it", "No, thanks"),
+    "pcm": ("Yes, hold am", "No, I no want"),
+    "ig": ("Ee, debe ya", "Mba, daalụ"),
+    "yo": ("Bẹẹni, fi pamọ", "Rárá, o ṣeun"),
+    "ha": ("I, ajiye shi", "A'a, na gode"),
+}
+# Older titles still count, so a button already on a phone is not misread.
+_LEGACY_YES = ("Yes, I want it",)
+_LEGACY_NO = ("No",)
+CONFIRM_YES_TITLE = CONFIRM_LABELS["en"][0]
+CONFIRM_NO_TITLE = CONFIRM_LABELS["en"][1]
 
 
-def confirm_purchase_interactive(body: str) -> dict:
-    """Reply buttons for a one-time purchase confirm. Titles stay within 20 characters."""
+def confirm_titles(language: str | None) -> tuple[str, str]:
+    return CONFIRM_LABELS.get(language or "en", CONFIRM_LABELS["en"])
+
+
+def confirm_yes_titles() -> set[str]:
+    titles = {title.lower() for title, _no in CONFIRM_LABELS.values()}
+    titles.update(title.lower() for title in _LEGACY_YES)
+    return titles
+
+
+def confirm_no_titles() -> set[str]:
+    titles = {title.lower() for _yes, title in CONFIRM_LABELS.values()}
+    titles.update(title.lower() for title in _LEGACY_NO)
+    return titles
+
+
+def confirm_purchase_interactive(body: str, language: str | None = "en") -> dict:
+    """Yes and No reply buttons. Titles stay within 20 characters."""
+    yes, no = confirm_titles(language)
     return {
         "type": "button",
         "body": {"text": (body or "")[:1024]},
         "action": {
             "buttons": [
-                {"type": "reply", "reply": {"id": CONFIRM_YES_ID, "title": CONFIRM_YES_TITLE}},
-                {"type": "reply", "reply": {"id": CONFIRM_NO_ID, "title": CONFIRM_NO_TITLE}},
+                {"type": "reply", "reply": {"id": CONFIRM_YES_ID, "title": yes}},
+                {"type": "reply", "reply": {"id": CONFIRM_NO_ID, "title": no}},
             ]
         },
     }
