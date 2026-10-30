@@ -11,6 +11,7 @@ from convoplex.actionlog import ActionLog
 from convoplex.commercial import commercial_payload, reconcile_text
 from convoplex.context import agent_context
 from convoplex.execution import ExecutionContext, audit_payload, scope_arguments
+from convoplex.greeting import greeting_reply, has_market_address, is_salutation_phrase
 from convoplex.languages import (
     CONFIRM,
     explicit_language,
@@ -193,6 +194,9 @@ def _run(
         and decision not in ("decline", "accept")
     ):
         decision = "picture"
+    elif task == "reply" and has_market_address(user_text) and decision != "decline":
+        # "My customer, I wan buy rice" opens the sale. It is not a yes and not a brand.
+        decision = "greet"
     elif pivot and decision != "decline":
         decision = "pivot"
     if decision == "accept" and profile.get("open_offer"):
@@ -416,6 +420,13 @@ def _run(
             confirm_offer_id = int(held["offer_id"])
         elif already:
             text = offer_price_clause(profile, held.get("product_name"), held.get("offer_price_ngn")) or text
+    elif decision == "greet":
+        intent = "question"
+        order = None
+        held = profile.get("open_offer") or {}
+        text = greeting_reply(profile, user_text or "", held or None)
+        if held.get("offer_id") is not None:
+            confirm_offer_id = int(held["offer_id"])
     elif decision == "pivot" and pivot:
         intent = "question"
         order = None
@@ -619,6 +630,15 @@ def _resolve_ask(log: ActionLog, customer_id: int, arguments: dict, profile: dic
     language = arguments.get("language") or profile.get("language") or "en"
     if not phrase:
         return {"ok": False, "error": "phrase is empty", "ask": False, "already_asked": False, "phrase": ""}
+    if is_salutation_phrase(phrase):
+        return {
+            "ok": True,
+            "ask": False,
+            "already_asked": True,
+            "phrase": phrase,
+            "language": language,
+            "question": None,
+        }
     if _asked_before(log, customer_id, phrase) or _ask_count(log, customer_id) >= 2:
         return {
             "ok": True,

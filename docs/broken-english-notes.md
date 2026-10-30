@@ -21,6 +21,12 @@ These are common and safe to take at the usual meaning. The list is not complete
 | chop | eat |
 | how much e be | what's the price |
 | kpai | a softer word for die. "e don kpai" = he, she, or it is dead. |
+| my customer, customer | A warm name regular buyers and sellers use for each other. Not a product. |
+| costoma, kustoma, customa, kostomer | The same word as customer, as a voice note often spells it. |
+
+## My customer
+
+In the market, people who trade regularly greet each other as "My customer" or "Customer". The shop answers with the same form. "My customer, how you dey?" gets a short "I dey fine" and then the offer. "Customer, I wan buy rice" does not get a "how you dey" reply, because they did not greet. oga, madam, aunty, uncle, bros, and the rest are address terms too. The shop does not call the customer oga back. None of these words is a brand, and none of them means the shop is out of stock.
 
 ## Bereavement
 
