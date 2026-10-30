@@ -115,6 +115,21 @@ _FUZZY = (
     ("naija", "pcm"),
 )
 
+# Whole phrases and tokens a voice note often writes instead of the language name.
+# "house a" is Hausa. Checked before the ordinary word "house", which is not.
+_MISHEARD = {
+    "ausa": "ha",
+    "hausaa": "ha",
+    "house a": "ha",
+    "housea": "ha",
+    "how sa": "ha",
+    "yaruba": "yo",
+    "yuroba": "yo",
+    "your uba": "yo",
+    "eegbo": "ig",
+    "ig bo": "ig",
+}
+
 _SWITCH_CUES = frozenset(
     {"speak", "switch", "change", "talk", "use", "want", "language", "lang", "asusu", "ede", "yare"}
 )
@@ -195,7 +210,7 @@ def interpret_language(value: str | None) -> dict | None:
         return None
     if folded in MENU_PHRASES:
         return {"action": "menu"}
-    coded = _ALIASES.get(folded)
+    coded = _MISHEARD.get(folded) or _ALIASES.get(folded)
     if coded:
         return {"action": "set", "language": coded}
     match = _CHANGE.match(folded)
@@ -248,13 +263,33 @@ def requested_language(value: str | None) -> str | None:
         return choice["language"]
     folded = _PLEASE.sub("", fold_language_text(value)).strip()
     words = folded.split()
-    if not words or len(words) > 12 or not any(word in _SWITCH_CUES for word in words):
+    if not words or len(words) > 12:
         return None
-    for word in words:
-        coded = _ALIASES.get(word) or _fuzzy_language(word)
+    if not any(word in _SWITCH_CUES for word in words):
+        return None
+    found = None
+    for index in range(len(words) - 1):
+        pair = f"{words[index]} {words[index + 1]}"
+        coded = _MISHEARD.get(pair) or _ALIASES.get(pair)
         if coded:
-            return coded
-    return None
+            found = coded
+    for word in words:
+        coded = _ALIASES.get(word) or _MISHEARD.get(word) or _fuzzy_language(word)
+        if coded:
+            found = coded
+    return found
+
+
+def explicit_language(value: str | None) -> str | None:
+    """The language an explicit request names, including a voice mishearing.
+
+    The target is chosen before a reply is written. A sentence that only
+    contains 'broken' as an ordinary word is not a request.
+    """
+    choice = interpret_language(value)
+    if choice and choice.get("action") == "set":
+        return choice["language"]
+    return requested_language(value)
 
 
 def _fuzzy_language(name: str) -> str | None:

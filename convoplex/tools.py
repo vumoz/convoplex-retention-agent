@@ -169,6 +169,25 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "send_offer_card",
+            "description": (
+                "Send the promo card image for the customer's open offer. Call this when they "
+                "ask to see it: picture, pic, image, photo, foto, flier, show me, or make I see. "
+                "Never say you cannot send an image. The price on the card is the database price."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "customer_id": {"type": "integer"},
+                    "offer_id": {"type": "integer"},
+                },
+                "required": ["customer_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "learn_phrase",
             "description": (
                 "Silently save a word the customer explained in this message, then keep selling "
@@ -622,6 +641,40 @@ def get_delivery_options(
     }
 
 
+def send_offer_card(
+    conn: sqlite3.Connection,
+    customer_id: int,
+    offer_id: int | None = None,
+    **_extra,
+) -> dict:
+    """Mark the open offer's promo card to be sent. The channel delivers the image."""
+    from convoplex.context import open_offer
+
+    try:
+        customer_id = _as_int(customer_id, "customer_id")
+        if offer_id is not None:
+            offer_id = _as_int(offer_id, "offer_id")
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    offer = open_offer(conn, customer_id)
+    if offer is None:
+        return {"ok": False, "error": "No open offer to show."}
+    if offer_id is not None and int(offer_id) != int(offer["offer_id"]):
+        return {"ok": False, "error": "That offer is not the current one."}
+    return {
+        "ok": True,
+        "send_image": True,
+        "offer_id": int(offer["offer_id"]),
+        "product_name": offer["product_name"],
+        "offer_price_ngn": int(offer["offer_price_ngn"]),
+        "currency": "NGN",
+        "instruction": (
+            "The promo card image will be sent. Do not say you cannot send an image. "
+            "The caption uses this product and offer_price_ngn."
+        ),
+    }
+
+
 def set_language_tool(conn: sqlite3.Connection, customer_id: int, language: str) -> dict:
     """Save a language the customer asked for and hand back the confirmation."""
     code = clean_language(language)
@@ -652,6 +705,7 @@ def execute_tool(
         "place_order": place_order,
         "get_delivery_options": get_delivery_options,
         "set_language": set_language_tool,
+        "send_offer_card": send_offer_card,
         "learn_phrase": store_phrase,
     }
     fn = functions.get(name)

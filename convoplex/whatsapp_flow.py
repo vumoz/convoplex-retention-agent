@@ -25,6 +25,7 @@ from convoplex.integrations.images import (
     promo_filename,
     read_promo_bytes,
     remember_promo,
+    render_promo_card,
 )
 from convoplex.integrations.voice import VoiceError, transcribe_audio
 from convoplex.integrations.whatsapp import (
@@ -700,6 +701,20 @@ def _process_one(
         outbound = result.message
         if hint:
             outbound = f"{outbound.rstrip()}\n\n{hint}"
+        if getattr(result, "image_offer_id", None):
+            _send_offer_image(
+                settings,
+                channel,
+                log,
+                store,
+                http,
+                customer_id=customer_id,
+                offer_id=int(result.image_offer_id),
+                caption=outbound,
+                language=getattr(result, "language", None),
+                started=started,
+                turn=turn,
+            )
         if getattr(result, "confirm_offer_id", None) and _send_confirm_buttons(
             settings,
             channel,
@@ -736,6 +751,81 @@ def _process_one(
     finally:
         if channel == "whatsapp" and not turn["delivered"]:
             _log_unsent(settings, log, message, turn, started)
+
+
+def ensure_promo_bytes(settings: Settings, offer_id: int) -> bytes | None:
+    """Cached promo card, or a newly drawn one. A failed live draw still returns a card."""
+    conn = open_db(settings)
+    try:
+        cached = read_promo_bytes(conn, settings.output_dir, offer_id)
+        if cached:
+            return cached
+        offer = load_offer_for_card(conn, offer_id)
+        if offer is None:
+            return None
+        image = None
+        try:
+            card = build_promo_image(
+                offer,
+                mode=settings.llm_mode,
+                api_key=settings.meta_api_key,
+                base_url=settings.meta_base_url,
+                model=settings.image_model,
+            )
+            image = card.image
+        except Exception:
+            image = None
+        if not image:
+            try:
+                image = render_promo_card(offer, None)
+            except Exception:
+                return None
+        remember_promo(conn, image, settings.output_dir, offer_id)
+        return image
+    finally:
+        conn.close()
+
+
+def _send_offer_image(
+    settings,
+    channel,
+    log,
+    store,
+    http,
+    *,
+    customer_id: int,
+    offer_id: int,
+    caption: str,
+    language: str | None,
+    started: float | None,
+    turn: dict | None,
+) -> None:
+    """Send the promo card. A failure stays silent so the reply never says it cannot."""
+    if channel != "whatsapp":
+        return
+    image = ensure_promo_bytes(settings, offer_id)
+    if not image:
+        return
+    try:
+        deliver(
+            settings,
+            channel,
+            log,
+            store,
+            http,
+            customer_id=customer_id,
+            message_seq=None,
+            kind="image",
+            text=caption,
+            image=image,
+            caption=caption,
+            session_open=True,
+            language=language,
+            started=started,
+            turn=turn,
+        )
+    except (SendBlocked, WhatsAppError):
+        return
 
 
 def _send_confirm_buttons(

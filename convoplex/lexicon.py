@@ -47,6 +47,11 @@ SEED = (
     ("chop", "eat", None),
     ("how much e be", "what's the price", "how much e be"),
     ("kpai", 'a softer word for die. "e don kpai" = he, she, or it is dead.', "e don kpai"),
+    ("picture", "image of the offer or the rice", "give me picture"),
+    ("pic", "image of the offer", "send the pic"),
+    ("foto", "image of the offer", "abeg foto"),
+    ("image", "image of the offer", "send me the image"),
+    ("flier", "image of the offer", "send the flier"),
 )
 
 _ASK = {
