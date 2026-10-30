@@ -11,7 +11,14 @@ from convoplex.actionlog import ActionLog
 from convoplex.commercial import commercial_payload, reconcile_text
 from convoplex.context import agent_context
 from convoplex.execution import ExecutionContext, audit_payload, scope_arguments
-from convoplex.languages import CONFIRM, guard_reply, message_asks_something_else, message_is_language_only
+from convoplex.languages import (
+    CONFIRM,
+    explicit_language,
+    guard_reply,
+    message_asks_something_else,
+    message_is_language_only,
+    save_language,
+)
 from convoplex.lexicon import clarify_question, hold_line, normalize_phrase
 from convoplex.integrations.whatsapp import (
     CONFIRM_NO_ID,
@@ -35,10 +42,12 @@ from convoplex.messages import (
     decline_message,
     offer_price_clause,
     delivery_fee_ngn,
+    image_offer_message,
     one_seasonal_hook,
     polish_acceptance,
     question_message,
     substitute_message,
+    wants_product_image,
     winback_message,
 )
 from convoplex.substitute import unstocked_request
@@ -62,6 +71,7 @@ class AgentResult:
     tool_trace: list[str] = field(default_factory=list)
     llm_mode: str = "mock"
     confirm_offer_id: int | None = None
+    image_offer_id: int | None = None
 
 
 def draft_winback(
@@ -173,15 +183,24 @@ def _run(
         # double the budget: that retry spent most of the live language switch.
         reply_kwargs = {"reasoning_effort": "minimal", "retry_on_length": False}
     context = ExecutionContext.for_customer(profile)
+    asked_language = explicit_language(user_text) if task == "reply" else None
     pivot = unstocked_request(conn, user_text, profile) if task == "reply" else None
     decision = _reply_decision(user_text, profile, from_voice) if task == "reply" else None
-    if pivot and decision != "decline":
+    if (
+        task == "reply"
+        and wants_product_image(user_text)
+        and profile.get("open_offer")
+        and decision not in ("decline", "accept")
+    ):
+        decision = "picture"
+    elif pivot and decision != "decline":
         decision = "pivot"
     if decision == "accept" and profile.get("open_offer"):
         _record_confirmation(conn, profile, user_text)
     clarify_question_text = None
     blocked_repeat_ask = False
     learned_this_turn = False
+    image_offer_id = None
 
     for _round in (() if decision else range(1, MAX_ROUNDS + 1)):
         try:
@@ -278,6 +297,8 @@ def _run(
             if call.name == "set_language" and result.get("ok"):
                 switched_to = str(result["language"])
                 profile["language"] = switched_to
+            if call.name == "send_offer_card" and result.get("ok") and result.get("send_image"):
+                image_offer_id = int(result["offer_id"])
             if call.name == "create_offer" and result.get("ok"):
                 offer = result
             if call.name == "place_order" and result.get("ok"):
@@ -375,7 +396,15 @@ def _run(
     if task == "reply" and intent == "decline":
         text = _without_payday(text) or decline_message(profile)
     confirm_offer_id = None
-    if decision == "confirm":
+    if decision == "picture":
+        intent = "question"
+        order = None
+        held = profile.get("open_offer") or {}
+        text = image_offer_message(profile, held.get("product_name"), int(held.get("offer_price_ngn") or 0))
+        if held.get("offer_id") is not None:
+            confirm_offer_id = int(held["offer_id"])
+            image_offer_id = int(held["offer_id"])
+    elif decision == "confirm":
         intent = "question"
         order = None
         held = profile.get("open_offer") or {}
@@ -416,12 +445,33 @@ def _run(
         text = polish_acceptance(text, profile, delivery, user_text)
         text = _ensure_offer_price(text, profile)
 
+    if asked_language and switched_to != asked_language:
+        # The model wrote in the previous language, or never called set_language.
+        # The explicit request is already known, so the reply uses that language.
+        save_language(conn, customer_id, asked_language, channel="whatsapp")
+        switched_to = asked_language
+        profile["language"] = asked_language
+        ignored_switch = True
+    else:
+        ignored_switch = False
     if switched_to:
         profile["language"] = switched_to
         confirmation = CONFIRM[switched_to]
         extra = message_asks_something_else(user_text)
         if language_only or not extra or not (text or "").strip():
             text = confirmation
+        elif ignored_switch:
+            held = profile.get("open_offer") or {}
+            if held.get("product_name") and held.get("offer_price_ngn") is not None:
+                body = question_message(
+                    profile,
+                    held["product_name"],
+                    int(held["offer_price_ngn"]),
+                    held.get("stock_qty"),
+                )
+            else:
+                body = ""
+            text = f"{confirmation}\n\n{body}".strip() if body else confirmation
         elif confirmation not in text:
             text = f"{confirmation}\n\n{text.strip()}"
     if learned_this_turn:
@@ -483,6 +533,7 @@ def _run(
         tool_trace=trace,
         llm_mode=getattr(llm, "mode", "mock"),
         confirm_offer_id=confirm_offer_id,
+        image_offer_id=image_offer_id,
     )
 
 

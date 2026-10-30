@@ -516,6 +516,35 @@ def confirm_hold_message(ctx: dict, product_name: str | None, price_ngn: int | N
     return ask
 
 
+_IMAGE_ASK = re.compile(
+    r"\b(?:pictures?|pics?|images?|photos?|fotos?|fliers?|flyers?)\b"
+    r"|make i see|show me|wetin e look like|wetin e be like|let me see"
+    r"|gosi m|fi han|nuna mini|onyinyo|aworan|fọto|\bhoto\b",
+    re.IGNORECASE,
+)
+
+
+def wants_product_image(text: str | None) -> bool:
+    """True when they asked to see the product. Not a refusal and not a decline."""
+    return bool(_IMAGE_ASK.search(text or ""))
+
+
+def image_offer_message(ctx: dict, product_name: str, price_ngn: int) -> str:
+    """Caption for the promo card. The picture is sent; this line is not a refusal."""
+    price = naira(price_ngn)
+    product = (product_name or "").strip() or "the one we have"
+    code = _code(ctx)
+    if code == "pcm":
+        return f"See {product}. E be {price} now. Make I hold one for you?"
+    if code == "ig":
+        return f"Lee {product}. Ọ bụ {price} ugbu a. Ka m chekwaara gị otu?"
+    if code == "yo":
+        return f"Wo {product}. Ó jẹ́ {price} báyìí. Kí n fi ọ̀kan pamọ́ fún ọ?"
+    if code == "ha":
+        return f"Duba {product}. Shi ne {price} yanzu. In ajiye ɗaya maka ka?"
+    return f"Here is {product}, at {price}. Shall I set one aside for you?"
+
+
 def substitute_message(ctx: dict, missing: str, product_name: str, price_ngn: int) -> str:
     """The shop does not stock `missing`. Offer the in-stock alternative at the database price.
 

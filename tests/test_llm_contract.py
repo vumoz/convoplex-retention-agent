@@ -90,6 +90,7 @@ def test_tool_round_trip_matches_documented_shape(shop, log_path):
         "get_delivery_options",
         "set_language",
         "ask_phrase",
+        "send_offer_card",
         "learn_phrase",
     ]
     assert body["tools"] == TOOLS

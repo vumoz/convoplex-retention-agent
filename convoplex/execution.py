@@ -27,6 +27,7 @@ _NEEDS_CUSTOMER = {
     "create_offer",
     "place_order",
     "set_language",
+    "send_offer_card",
     "learn_phrase",
     "get_delivery_options",
     "get_price",
