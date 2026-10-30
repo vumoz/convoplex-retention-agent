@@ -11,7 +11,14 @@ from convoplex.actionlog import ActionLog
 from convoplex.commercial import commercial_payload, reconcile_text
 from convoplex.context import agent_context
 from convoplex.execution import ExecutionContext, audit_payload, scope_arguments
-from convoplex.greeting import greeting_reply, has_market_address, is_salutation_phrase
+from convoplex.greeting import (
+    finish_presented_offer,
+    greeting_reply,
+    has_market_address,
+    is_salutation_phrase,
+    present_offer,
+    reply_is_only_address,
+)
 from convoplex.languages import (
     CONFIRM,
     explicit_language,
@@ -205,6 +212,7 @@ def _run(
     blocked_repeat_ask = False
     learned_this_turn = False
     image_offer_id = None
+    pending_greet_offer = None
 
     for _round in (() if decision else range(1, MAX_ROUNDS + 1)):
         try:
@@ -423,10 +431,15 @@ def _run(
     elif decision == "greet":
         intent = "question"
         order = None
-        held = profile.get("open_offer") or {}
+        held = present_offer(conn, profile, user_text or "") or {}
+        if held:
+            profile["open_offer"] = held
         text = greeting_reply(profile, user_text or "", held or None)
+        if reply_is_only_address(text):
+            text = _full_sale_line(profile, held, user_text or "")
         if held.get("offer_id") is not None:
             confirm_offer_id = int(held["offer_id"])
+            pending_greet_offer = held
     elif decision == "pivot" and pivot:
         intent = "question"
         order = None
@@ -512,6 +525,14 @@ def _run(
         confirm=decision == "confirm" and confirm_offer_id is not None,
     )
     text = guard_reply(text, profile.get("language"))
+    if task == "reply" and reply_is_only_address(text):
+        held = profile.get("open_offer") or present_offer(conn, profile, user_text or "") or {}
+        text = _full_sale_line(profile, held, user_text or "")
+        if held.get("offer_id") is not None:
+            confirm_offer_id = int(held["offer_id"])
+            pending_greet_offer = held
+    if pending_greet_offer and pending_greet_offer.get("offer_id"):
+        finish_presented_offer(conn, profile, pending_greet_offer, text)
 
     payload = {
         "customer_id": customer_id,
@@ -710,6 +731,25 @@ def _pcm_voice_clarify(text: str, from_voice: bool, language: str | None, offer:
             re.IGNORECASE,
         )
     )
+
+
+def _full_sale_line(profile: dict, held: dict | None, user_text: str) -> str:
+    """A reply that still names the product and the database price."""
+    from convoplex.greeting import customer_address
+
+    address = customer_address(user_text)
+    if held and held.get("product_name") and held.get("offer_price_ngn") is not None:
+        line = question_message(
+            profile,
+            held["product_name"],
+            int(held["offer_price_ngn"]),
+            held.get("stock_qty"),
+        )
+        if address and address.lower() not in line.lower():
+            return f"{address}, {line}"
+        return line
+    ask = "Wetin you wan buy?" if (profile.get("language") or "pcm") == "pcm" else "What would you like to buy?"
+    return f"{address}, {ask}" if address else ask
 
 
 def _record_confirmation(conn, profile: dict, user_text: str | None) -> None:

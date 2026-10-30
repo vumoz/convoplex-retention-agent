@@ -107,6 +107,62 @@ def has_market_address(text: str | None) -> bool:
     return bool(_CUSTOMER.search(raw) or _VOCATIVE.search(raw) or has_greeting(raw))
 
 
+_FILLER = frozenset(
+    {
+        "i",
+        "im",
+        "wan",
+        "wont",
+        "wanna",
+        "buy",
+        "please",
+        "abeg",
+        "the",
+        "a",
+        "am",
+        "for",
+        "me",
+        "you",
+        "to",
+        "some",
+        "of",
+        "get",
+        "and",
+        "na",
+        "o",
+        "oo",
+    }
+)
+
+
+def sale_focus(text: str | None) -> str:
+    """The request left after the address and the greeting are taken off.
+
+    'my customer, i wan buy rice' becomes 'rice'. 'My customer.' becomes ''.
+    """
+    raw = text or ""
+    raw = _MY_CUSTOMER.sub(" ", raw)
+    raw = _CUSTOMER.sub(" ", raw)
+    raw = _VOCATIVE.sub(" ", raw)
+    raw = _GREETING.sub(" ", raw)
+    raw = re.sub(r"[^\w\s]+", " ", raw, flags=re.UNICODE)
+    words = [word for word in raw.split() if word.lower() not in _FILLER and len(word) > 1]
+    return " ".join(words).strip()
+
+
+def reply_is_only_address(text: str | None) -> bool:
+    """True when nothing is left but the address, punctuation, or a bare hello."""
+    folded = _fold(text or "")
+    folded = re.sub(r"[^a-z0-9]+", " ", folded)
+    folded = re.sub(
+        r"\b(?:my customer|customer|i dey fine o|im fine|i am fine|a di m mma|mo wa daadaa|lafiya lau)\b",
+        " ",
+        folded,
+    )
+    folded = re.sub(r"\s+", " ", folded).strip()
+    return folded == ""
+
+
 def _fine(language: str) -> str:
     if language == "pcm":
         return "I dey fine o!"
@@ -133,6 +189,66 @@ def _offer_line(language: str, product: str, price: str, *, greeted: bool) -> st
     return f"{product} is {price}. Shall I set one aside for you?"
 
 
+def present_offer(conn, profile: dict, text: str) -> dict | None:
+    """The open offer, or a new one for the product they just named.
+
+    A greeting with no offer yet must still quote a database price.
+    """
+    from convoplex.context import open_offer
+    from convoplex.tools import create_offer, find_products
+
+    customer_id = int(profile.get("id") or profile["customer_id"])
+    held = open_offer(conn, customer_id)
+    focus = sale_focus(text)
+    if held is None or (focus and not _offer_matches(conn, profile, held, focus)):
+        query = focus or (profile.get("favourite_product") or {}).get("name") or ""
+        if not query:
+            return held
+        retailer_id = int(profile["retailer_id"])
+        if not find_products(conn, retailer_id, query, limit=1):
+            return held
+        created = create_offer(conn, customer_id=customer_id, discount_percent=10, product=query)
+        if not created.get("ok"):
+            return held
+        held = {
+            "offer_id": int(created["offer_id"]),
+            "product_id": int(created["product_id"]),
+            "product_name": created["product_name"],
+            "offer_price_ngn": int(created["offer_price_ngn"]),
+            "list_price_ngn": int(created["list_price_ngn"]),
+            "discount_percent": int(created["discount_percent"]),
+            "stock_qty": created.get("stock_qty"),
+            "retailer_id": int(created["retailer_id"]),
+            "customer_id": customer_id,
+        }
+    return held
+
+
+def _offer_matches(conn, profile: dict, offer: dict, focus: str) -> bool:
+    from convoplex.tools import find_products
+
+    name = str(offer.get("product_name") or "").lower()
+    if focus.lower() in name:
+        return True
+    retailer_id = int(profile.get("retailer_id") or offer.get("retailer_id") or 0)
+    rows = find_products(conn, retailer_id, focus, limit=1)
+    return bool(rows) and int(rows[0]["id"]) == int(offer.get("product_id") or 0)
+
+
+def finish_presented_offer(conn, profile: dict, offer: dict, text: str) -> None:
+    """Drafted offers become the open offer the Yes button can confirm."""
+    from convoplex.tools import mark_offer_sent
+
+    if not offer or not offer.get("offer_id"):
+        return
+    mark_offer_sent(
+        conn,
+        int(offer["offer_id"]),
+        text,
+        language=str(profile.get("language") or "en"),
+    )
+
+
 def greeting_reply(ctx: dict, text: str, offer: dict | None) -> str:
     """Mirror My customer / Customer, answer a greeting, then the open offer."""
     language = str(ctx.get("language") or "en")
@@ -141,11 +257,12 @@ def greeting_reply(ctx: dict, text: str, offer: dict | None) -> str:
     address = customer_address(text)
     greeted = has_greeting(text)
     parts: list[str] = []
-    if address and greeted:
+    bare = not sale_focus(text)
+    if address and (greeted or bare):
         parts.append(f"{address}, {_fine(language)}")
     elif address:
         parts.append(address + ",")
-    elif greeted:
+    elif greeted or bare:
         parts.append(_fine(language))
     if offer and offer.get("product_name") and offer.get("offer_price_ngn") is not None:
         parts.append(

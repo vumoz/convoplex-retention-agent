@@ -1,5 +1,10 @@
 """'My customer' is a greeting, not a brand the shop is out of."""
 
+import json
+
+import httpx
+from fastapi.testclient import TestClient
+
 from convoplex.actionlog import ActionLog
 from convoplex.agent import draft_winback, handle_reply
 from convoplex.greeting import customer_address
@@ -133,6 +138,183 @@ def test_igbo_and_yoruba_greetings_keep_the_sale(shop, log_path):
     _assert_sale(shop, yoruba, draft)
     assert "Mo wa daadaa" in yoruba.message
     assert "no dey" not in yoruba.message.lower()
+
+
+def test_voice_transcript_without_an_open_offer_still_quotes_the_rice(shop, log_path):
+    """The live bug: no win-back yet, so the reply was only 'My customer,'."""
+    phrases = (
+        "my customer, i wan buy rice",
+        "My customer I wan buy rice.",
+        "my costoma i wan buy rice",
+        "Customer i wan buy rice",
+        "my customer, how you dey? i wan buy rice",
+    )
+    for phrase in phrases:
+        for voice in (False, True):
+            shop.execute("DELETE FROM purchase_states")
+            shop.execute("DELETE FROM offers")
+            shop.commit()
+            log = ActionLog(log_path)
+            before = _orders(shop)
+            result = handle_reply(
+                shop, log, _BrandModel(), 1, phrase, max_tokens=1000, from_voice=voice
+            )
+            lowered = result.message.lower()
+            assert lowered.startswith("my customer") or lowered.startswith("customer,")
+            assert "mama gold" in lowered
+            assert "₦70,200" in result.message
+            assert result.message.strip(" .,!") != "My customer"
+            assert "no dey" not in lowered
+            assert result.order is None
+            assert result.confirm_offer_id
+            assert _orders(shop) == before
+            state = shop.execute(
+                "SELECT state FROM purchase_states WHERE offer_id = ? ORDER BY id DESC LIMIT 1",
+                (result.confirm_offer_id,),
+            ).fetchone()["state"]
+            assert state == "offer_presented"
+
+    shop.execute("DELETE FROM offers")
+    shop.commit()
+    log = ActionLog(log_path)
+    only = handle_reply(shop, log, _BrandModel(), 1, "My customer.", max_tokens=1000, from_voice=True)
+    assert only.message.startswith("My customer,")
+    assert "I dey fine" in only.message
+    assert "mama gold" in only.message.lower() or "wetin you wan buy" in only.message.lower()
+    assert only.message.strip(" .,!") != "My customer"
+    assert only.order is None
+
+
+def test_voice_webhook_sends_product_and_price_not_just_the_address(shop, tmp_path, monkeypatch):
+    from convoplex.integrations.voice import Transcript
+    from tests.test_whatsapp import DEMO, DEMO_DIGITS, PHONE_ID, SECRET, TOKEN, _app, _sign
+
+    def fake_transcribe(raw, **kwargs):
+        return Transcript(
+            text="my customer, i wan buy rice",
+            model="mock",
+            latency_ms=0,
+            source_format="wav",
+            mode="mock",
+        )
+
+    monkeypatch.setattr("convoplex.whatsapp_flow.transcribe_audio", fake_transcribe)
+    monkeypatch.setattr(
+        "convoplex.integrations.whatsapp.WhatsAppClient.download_media",
+        lambda self, media_id: (b"RIFFfake", "audio/wav"),
+    )
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        if b'"status"' in request.content and b"read" in request.content:
+            return httpx.Response(200, json={"success": True})
+        body = json.loads(request.content)
+        if body.get("type") == "interactive":
+            return httpx.Response(200, json={"messages": [{"id": "wamid.BTN"}]})
+        return httpx.Response(200, json={"messages": [{"id": "wamid.TXT"}]})
+
+    client = TestClient(
+        _app(
+            shop,
+            tmp_path,
+            channel="whatsapp",
+            whatsapp_token=TOKEN,
+            whatsapp_phone_number_id=PHONE_ID,
+            whatsapp_verify_token="verify-me",
+            whatsapp_app_secret=SECRET,
+            whatsapp_demo_to=DEMO,
+            whatsapp_http=httpx.Client(transport=httpx.MockTransport(handler)),
+        )
+    )
+    client.post("/v1/whatsapp/customer", json={"customer_id": 1})
+    payload = {
+        "entry": [
+            {
+                "changes": [
+                    {
+                        "value": {
+                            "messages": [
+                                {
+                                    "id": "wamid.CUST1",
+                                    "from": DEMO_DIGITS,
+                                    "timestamp": "1761523200",
+                                    "type": "audio",
+                                    "audio": {"id": "media-cust", "mime_type": "audio/wav"},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+    raw = json.dumps(payload).encode()
+    sent = client.post(
+        "/v1/whatsapp/webhook",
+        content=raw,
+        headers={"Content-Type": "application/json", "X-Hub-Signature-256": _sign(raw)},
+    )
+    assert sent.status_code == 200
+    assert sent.json()["processed"] is True
+    bodies = []
+    for call in calls:
+        if not call.content or call.content[:1] != b"{":
+            continue
+        body = json.loads(call.content)
+        if body.get("type") == "text":
+            bodies.append(body["text"]["body"])
+        elif body.get("type") == "interactive":
+            bodies.append(body["interactive"]["body"]["text"])
+    assert bodies
+    outgoing = bodies[-1]
+    assert outgoing.strip(" .,!") != "My customer"
+    assert "Mama Gold" in outgoing
+    assert "₦70,200" in outgoing
+    assert "my customer" in outgoing.lower()
+
+    calls.clear()
+    again = {
+        "entry": [
+            {
+                "changes": [
+                    {
+                        "value": {
+                            "messages": [
+                                {
+                                    "id": "wamid.CUST2",
+                                    "from": DEMO_DIGITS,
+                                    "timestamp": "1761523300",
+                                    "type": "audio",
+                                    "audio": {"id": "media-cust-2", "mime_type": "audio/wav"},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+    raw_again = json.dumps(again).encode()
+    second = client.post(
+        "/v1/whatsapp/webhook",
+        content=raw_again,
+        headers={"Content-Type": "application/json", "X-Hub-Signature-256": _sign(raw_again)},
+    )
+    assert second.status_code == 200
+    again_bodies = []
+    for call in calls:
+        if not call.content or call.content[:1] != b"{":
+            continue
+        body = json.loads(call.content)
+        if body.get("type") == "interactive":
+            again_bodies.append(body["interactive"]["body"]["text"])
+        elif body.get("type") == "text":
+            again_bodies.append(body["text"]["body"])
+    assert again_bodies
+    assert "Mama Gold" in again_bodies[-1]
+    assert "₦70,200" in again_bodies[-1]
+    assert again_bodies[-1].strip(" .,!") != "My customer"
 
 
 def test_a_salutation_is_not_learned_or_a_missing_product(shop, log_path):
