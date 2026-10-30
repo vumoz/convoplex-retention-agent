@@ -89,7 +89,13 @@ When the model does not understand a word, in English, Broken English (Nigerian 
 
 ## How to run locally
 
-Python 3.11 or newer.
+Python 3.11 or newer. The supported runtimes are Linux, macOS, and Vercel. Windows native is unsupported for now: the action log and WhatsApp state use `fcntl`, which Windows does not provide. Use Linux, macOS, or the Vercel deployment instead of a native Windows checkout.
+
+`CONVOPLEX_PROFILE` is `local` (the laptop and the test suite, open when `ADMIN_TOKEN` is unset), `public`, or `pilot`. A public or pilot profile with no `ADMIN_TOKEN` refuses shop writes and `/health` reports not ready. Live WhatsApp (`CONVOPLEX_CHANNEL=whatsapp`) also needs `WHATSAPP_APP_SECRET` or readiness fails. The channel switch is stored in the database so every instance, including a cold start, sees the same mode. `CONVOPLEX_OUTBOUND=off` stops new WhatsApp sends and leaves drafts in place.
+
+The provider webhook does not change the book while the channel is `simulator`. Exercise that path with `POST /v1/whatsapp/simulate` and the admin token. `/demo` stays read-only. Unmapped senders are ignored. There is no fallback customer.
+
+If a deploy goes wrong: set `CONVOPLEX_OUTBOUND=off`, switch the channel back to `simulator` (or set `CONVOPLEX_CHANNEL=simulator` and clear the `channel_mode` row), rotate `ADMIN_TOKEN` and `WHATSAPP_APP_SECRET`, and restore the database from the Neon backup. Do not put secrets in git.
 
 ```bash
 python -m venv .venv

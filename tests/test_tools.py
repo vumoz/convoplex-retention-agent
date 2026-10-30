@@ -1,6 +1,18 @@
 import json
 
+from convoplex.purchase import confirm_purchase
 from convoplex.tools import check_stock, create_offer, get_delivery_options, get_price, place_order
+
+
+def _confirm(shop, *, qty, offer_id=None, product_id=1, customer_id=1):
+    confirm_purchase(
+        shop,
+        customer_id=customer_id,
+        retailer_id=1,
+        product_id=product_id,
+        qty=qty,
+        offer_id=offer_id,
+    )
 
 
 def test_price_and_stock_match_the_shelf(shop):
@@ -22,6 +34,7 @@ def test_offer_clamps_policy_and_order_debits_stock(shop):
     assert offer["list_price_ngn"] == 78000
     assert offer["offer_price_ngn"] == 70200
     shop.execute("UPDATE offers SET status = 'sent' WHERE id = ?", (offer["offer_id"],))
+    _confirm(shop, qty=2, offer_id=offer["offer_id"])
     order = place_order(shop, customer_id=1, product_id=1, qty=2, offer_id=offer["offer_id"])
     assert order["ok"] is True
     assert order["total_ngn"] == 140400
@@ -55,6 +68,7 @@ def test_out_of_stock_and_cross_shop_product(shop):
 
 
 def test_place_order_caps_at_stock_and_max_per_order(shop):
+    _confirm(shop, qty=100)
     capped = place_order(shop, customer_id=1, product_id=1, qty=100)
     assert capped["ok"] is True
     assert capped["requested_qty"] == 100
@@ -64,11 +78,13 @@ def test_place_order_caps_at_stock_and_max_per_order(shop):
     assert left == 10
 
     shop.execute("UPDATE products SET stock_qty = 20 WHERE id = 1")
+    _confirm(shop, qty=15)
     fifteen = place_order(shop, customer_id=1, product_id=1, qty=15)
     assert fifteen["qty"] == 10
     assert fifteen["capped"] is True
 
     shop.execute("UPDATE products SET stock_qty = 3 WHERE id = 1")
+    _confirm(shop, qty=8)
     thin = place_order(shop, customer_id=1, product_id=1, qty=8)
     assert thin["ok"] is True
     assert thin["qty"] == 3
@@ -79,6 +95,7 @@ def test_place_order_caps_at_stock_and_max_per_order(shop):
     assert empty["ok"] is False
 
     shop.execute("UPDATE products SET stock_qty = 20 WHERE id = 1")
+    _confirm(shop, qty=2)
     exact = place_order(shop, customer_id=1, product_id=1, qty=2)
     assert exact["ok"] is True
     assert exact["qty"] == 2
@@ -89,6 +106,7 @@ def test_place_order_caps_at_stock_and_max_per_order(shop):
 def test_declined_offer_is_charged_when_place_order_omits_offer_id(shop):
     offer = create_offer(shop, customer_id=1, product_id=1, discount_percent=10)
     shop.execute("UPDATE offers SET status = 'declined' WHERE id = ?", (offer["offer_id"],))
+    _confirm(shop, qty=2, offer_id=offer["offer_id"])
     order = place_order(shop, customer_id=1, product_id=1, qty=2)
     assert order["ok"] is True
     assert order["offer_id"] == offer["offer_id"]

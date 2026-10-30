@@ -6,8 +6,15 @@ import sqlite3
 from datetime import datetime, timezone
 
 from convoplex.db import scenario_as_of, transaction
+from convoplex.execution import ExecutionContext, audit_payload, scope_arguments
 from convoplex.languages import CONFIRM, clean_language, language_label, save_language
 from convoplex.lexicon import learn_phrase as store_phrase
+from convoplex.purchase import (
+    consume_confirmation,
+    expire_other_offers,
+    find_confirmation,
+    note_presented,
+)
 
 MIN_DISCOUNT = 5
 MAX_DISCOUNT = 15
@@ -359,6 +366,8 @@ def create_offer(
             ),
         )
         offer_id = int(cursor.lastrowid)
+    expire_other_offers(conn, customer_id, offer_id)
+    conn.commit()
     return {
         "ok": True,
         "offer_id": offer_id,
@@ -389,6 +398,43 @@ def _latest_valid_offer(conn: sqlite3.Connection, customer_id: int, product_id: 
     return conn.execute(sql, params).fetchone()
 
 
+def _reject(error: str, **extra) -> dict:
+    return {"ok": False, "error": error, **extra}
+
+
+def _product_by_id(conn, product_id: int):
+    return conn.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+
+
+def _resolve_named_product(conn, customer, product_id, product: str | None):
+    """Product first, inside this retailer. Ambiguous names return candidates and write nothing."""
+    retailer_id = int(customer["retailer_id"])
+    named = (product or "").strip()
+    if product_id is not None:
+        row = _product_by_id(conn, product_id)
+        if row is None:
+            return None, _reject(f"Unknown product_id {product_id}.")
+        if int(row["retailer_id"]) != retailer_id:
+            return None, _reject("That product belongs to a different retailer.")
+        if named and _rank(named, row["name"], row["sku"]) is None:
+            return None, _reject("The product name does not match that product id.")
+        return row, None
+    if not named:
+        return None, None
+    matches = find_products(conn, retailer_id, named, limit=5)
+    if not matches:
+        return None, _reject(f"No product matching {named!r} for this customer's shop.")
+    exact = [row for row in matches if _rank(named, row["name"], row["sku"]) == 0]
+    if len(exact) == 1:
+        return exact[0], None
+    if len(matches) > 1:
+        return None, _reject(
+            "Several products match. Ask which one.",
+            candidates=[_product_payload(row) for row in matches],
+        )
+    return matches[0], None
+
+
 def place_order(
     conn: sqlite3.Connection,
     customer_id: int,
@@ -413,51 +459,75 @@ def place_order(
     customer = _customer(conn, customer_id)
     if customer is None:
         return {"ok": False, "error": f"Unknown customer_id {customer_id}."}
+    retailer_id = int(customer["retailer_id"])
 
+    row, error = _resolve_named_product(conn, customer, product_id, product)
+    if error:
+        return error
+
+    offer = None
+    if offer_id is not None:
+        offer = conn.execute("SELECT * FROM offers WHERE id = ?", (offer_id,)).fetchone()
+        if offer is None:
+            return {"ok": False, "error": f"Unknown offer_id {offer_id}."}
+        if int(offer["customer_id"]) != customer_id:
+            return {"ok": False, "error": "Offer belongs to a different customer."}
+        if int(offer["retailer_id"]) != retailer_id:
+            return {"ok": False, "error": "Offer belongs to a different retailer."}
+        if offer["status"] not in ("drafted", "sent", "declined"):
+            return {"ok": False, "error": f"Offer is {offer['status']} and cannot be used."}
+        if row is None:
+            row = _product_by_id(conn, int(offer["product_id"]))
+            if row is None or int(row["retailer_id"]) != retailer_id:
+                return {"ok": False, "error": "That product belongs to a different retailer."}
+        elif int(offer["product_id"]) != int(row["id"]):
+            return {"ok": False, "error": "That offer is for a different product."}
+    elif row is not None:
+        attached = _latest_valid_offer(conn, customer_id, int(row["id"]))
+        if attached is not None:
+            offer = attached
+            offer_id = int(attached["id"])
+    else:
+        return {"ok": False, "error": "Pass product_id, product, or offer_id."}
+
+    confirmation = find_confirmation(
+        conn,
+        customer_id=customer_id,
+        product_id=int(row["id"]),
+        qty=requested_qty,
+        offer_id=offer_id,
+    )
+    if confirmation is None:
+        return {
+            "ok": False,
+            "error": "No matching purchase confirmation for this customer, product, quantity, and offer.",
+            "confirmed": False,
+        }
+
+    stock = int(row["stock_qty"])
+    if stock < 1:
+        return {
+            "ok": False,
+            "error": f"Only {stock} {row['unit']} of {row['name']} in stock.",
+            "stock_qty": stock,
+            "requested_qty": requested_qty,
+        }
+    qty = min(requested_qty, stock, MAX_QTY)
+    if offer is not None:
+        unit_price = int(offer["offer_price_ngn"])
+    else:
+        unit_price = int(row["price_ngn"])
+    total = unit_price * qty
+    ordered_on = scenario_as_of(conn).isoformat()
     with transaction(conn):
-        offer = None
-        if offer_id is None:
-            attached = _latest_valid_offer(conn, customer_id, product_id)
-            if attached is None and product_id is None:
-                attached = _latest_valid_offer(conn, customer_id, None)
-            if attached is not None:
-                offer = attached
-                offer_id = int(attached["id"])
-                product_id = int(attached["product_id"])
-        if offer_id is not None and offer is None:
-            offer = conn.execute("SELECT * FROM offers WHERE id = ?", (offer_id,)).fetchone()
-            if offer is None:
-                return {"ok": False, "error": f"Unknown offer_id {offer_id}."}
-            if int(offer["customer_id"]) != customer_id:
-                return {"ok": False, "error": "Offer belongs to a different customer."}
-            if offer["status"] not in ("drafted", "sent", "declined"):
-                return {"ok": False, "error": f"Offer is {offer['status']} and cannot be used."}
-            product_id = int(offer["product_id"])
-        row, error = _resolve_product(conn, customer, product_id, product)
-        if error:
-            return error
-        stock = int(row["stock_qty"])
-        if stock < 1:
-            return {
-                "ok": False,
-                "error": f"Only {stock} {row['unit']} of {row['name']} in stock.",
-                "stock_qty": stock,
-                "requested_qty": requested_qty,
-            }
-        qty = min(requested_qty, stock, MAX_QTY)
-        if offer is not None:
-            unit_price = int(offer["offer_price_ngn"])
-        else:
-            unit_price = int(row["price_ngn"])
-        total = unit_price * qty
-        ordered_on = scenario_as_of(conn).isoformat()
+        consume_confirmation(conn, int(confirmation["id"]))
         cursor = conn.execute(
             """
             INSERT INTO orders (
                 retailer_id, customer_id, ordered_on, status, total_ngn, channel, offer_id
             ) VALUES (?, ?, ?, 'completed', ?, 'whatsapp_sim', ?)
             """,
-            (int(customer["retailer_id"]), customer_id, ordered_on, total, offer_id),
+            (retailer_id, customer_id, ordered_on, total, offer_id),
         )
         order_id = int(cursor.lastrowid)
         conn.execute(
@@ -568,7 +638,13 @@ def set_language_tool(conn: sqlite3.Connection, customer_id: int, language: str)
     }
 
 
-def execute_tool(conn: sqlite3.Connection, name: str, arguments: dict) -> dict:
+def execute_tool(
+    conn: sqlite3.Connection,
+    name: str,
+    arguments: dict,
+    context: ExecutionContext | None = None,
+    log=None,
+) -> dict:
     functions = {
         "check_stock": check_stock,
         "get_price": get_price,
@@ -583,6 +659,16 @@ def execute_tool(conn: sqlite3.Connection, name: str, arguments: dict) -> dict:
         return {"ok": False, "error": f"Unknown tool: {name}"}
     if not isinstance(arguments, dict):
         return {"ok": False, "error": "Tool arguments must be a JSON object."}
+    if context is not None:
+        arguments, denial = scope_arguments(name, arguments, context)
+        if denial:
+            if log is not None:
+                log.append(
+                    kind="audit",
+                    actor="tool",
+                    payload=audit_payload(context, tool=name, reason=str(denial.get("reason") or "denied")),
+                )
+            return denial
     try:
         return fn(conn, **arguments)
     except TypeError as exc:
@@ -616,6 +702,17 @@ def mark_offer_sent(
                 """,
                 (message, offer_id),
             )
+        row = conn.execute("SELECT * FROM offers WHERE id = ?", (offer_id,)).fetchone()
+    if row is not None and row["status"] == "sent":
+        note_presented(
+            conn,
+            {
+                "customer_id": int(row["customer_id"]),
+                "retailer_id": int(row["retailer_id"]),
+                "offer_id": int(row["id"]),
+                "product_id": int(row["product_id"]),
+            },
+        )
 
 
 def mark_offer_declined(conn: sqlite3.Connection, offer_id: int) -> None:

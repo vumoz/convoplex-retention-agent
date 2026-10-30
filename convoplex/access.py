@@ -1,8 +1,9 @@
 """Public-demo guards: admin token, per-IP try-it limit, daily Meta cap.
 
 When ADMIN_TOKEN is set, every shop write requires it. Unset ADMIN_TOKEN
-leaves local runs and the test suite open. The WhatsApp webhook is not
-gated here; signature checks stay on the route.
+leaves local runs and the test suite open. A public or pilot profile
+(CONVOPLEX_PROFILE) refuses mutations when the token is missing. The
+WhatsApp webhook is not gated here; signature checks stay on the route.
 """
 
 from __future__ import annotations
@@ -100,6 +101,14 @@ def is_admin(request: Request, settings) -> bool:
 
 
 def require_admin(request: Request, settings) -> None:
+    """Local with no token stays open. Public and pilot never do.
+
+    A public or pilot profile with ADMIN_TOKEN unset refuses every mutation
+    instead of treating the missing secret as permission.
+    """
+    profile = getattr(settings, "profile", "local")
+    if profile in {"public", "pilot"} and not settings.admin_token:
+        raise HTTPException(401, "admin token required")
     if not settings.admin_token:
         return
     if is_admin(request, settings):
