@@ -15,9 +15,9 @@ from convoplex.languages import CONFIRM, guard_reply, message_asks_something_els
 from convoplex.lexicon import clarify_question, hold_line, normalize_phrase
 from convoplex.integrations.whatsapp import (
     CONFIRM_NO_ID,
-    CONFIRM_NO_TITLE,
     CONFIRM_YES_ID,
-    CONFIRM_YES_TITLE,
+    confirm_no_titles,
+    confirm_yes_titles,
 )
 from convoplex.llm import (
     Completion,
@@ -38,8 +38,10 @@ from convoplex.messages import (
     one_seasonal_hook,
     polish_acceptance,
     question_message,
+    substitute_message,
     winback_message,
 )
+from convoplex.substitute import unstocked_request
 from convoplex.purchase import confirm_purchase, note_clarification, note_declined, requested_qty
 from convoplex.money import naira
 from convoplex.prompts import build_messages
@@ -171,7 +173,10 @@ def _run(
         # double the budget: that retry spent most of the live language switch.
         reply_kwargs = {"reasoning_effort": "minimal", "retry_on_length": False}
     context = ExecutionContext.for_customer(profile)
+    pivot = unstocked_request(conn, user_text, profile) if task == "reply" else None
     decision = _reply_decision(user_text, profile, from_voice) if task == "reply" else None
+    if pivot and decision != "decline":
+        decision = "pivot"
     if decision == "accept" and profile.get("open_offer"):
         _record_confirmation(conn, profile, user_text)
     clarify_question_text = None
@@ -382,6 +387,17 @@ def _run(
             confirm_offer_id = int(held["offer_id"])
         elif already:
             text = offer_price_clause(profile, held.get("product_name"), held.get("offer_price_ngn")) or text
+    elif decision == "pivot" and pivot:
+        intent = "question"
+        order = None
+        text = substitute_message(
+            profile,
+            pivot["missing"],
+            pivot["product_name"],
+            int(pivot["price_ngn"]),
+        )
+        if pivot.get("offer_id") is not None:
+            confirm_offer_id = int(pivot["offer_id"])
 
     if task == "winback" and offer and offer.get("ok") and "₦" not in text:
         text = winback_message(profile, offer)
@@ -600,11 +616,12 @@ def _reply_decision(user_text: str | None, profile: dict, from_voice: bool) -> s
 
 
 def _button_choice(text: str | None) -> str | None:
+    """Button id or title. A No title is never treated as Yes."""
     folded = (text or "").strip().lower()
-    if folded in {CONFIRM_YES_ID, CONFIRM_YES_TITLE.lower()}:
-        return "yes"
-    if folded in {CONFIRM_NO_ID, CONFIRM_NO_TITLE.lower()}:
+    if folded == CONFIRM_NO_ID or folded in confirm_no_titles():
         return "no"
+    if folded == CONFIRM_YES_ID or folded in confirm_yes_titles():
+        return "yes"
     return None
 
 

@@ -114,10 +114,10 @@ def test_explicit_i_no_want_am_still_declines(shop, log_path):
 
 
 def test_confirm_buttons_and_their_replies(shop, log_path):
-    interactive = confirm_purchase_interactive("Mama Gold Rice 50kg na ₦70,200.")
+    interactive = confirm_purchase_interactive("Mama Gold Rice 50kg na ₦70,200.", language="pcm")
     assert interactive["type"] == "button"
     buttons = interactive["action"]["buttons"]
-    assert [button["reply"]["title"] for button in buttons] == ["Yes, I want it", "No"]
+    assert [button["reply"]["title"] for button in buttons] == ["Yes, hold am", "No, I no want"]
     assert [button["reply"]["id"] for button in buttons] == ["buy_yes", "buy_no"]
     assert all(len(button["reply"]["title"]) <= 20 for button in buttons)
 
@@ -136,4 +136,52 @@ def test_confirm_buttons_and_their_replies(shop, log_path):
     no = handle_reply(shop, log_no, _DeclineModel(), 2, "buy_no", max_tokens=1000, from_voice=True)
     assert no.intent == "decline"
     assert no.order is None
+    assert no.confirm_offer_id is None
     assert shop.execute("SELECT status FROM offers WHERE customer_id = 2").fetchone()["status"] == "declined"
+
+
+def test_no_button_and_typed_or_voice_no_do_not_buy(shop, log_path):
+    from convoplex.integrations.whatsapp import CONFIRM_LABELS
+
+    for language, (yes, no) in CONFIRM_LABELS.items():
+        buttons = confirm_purchase_interactive("Hold?", language=language)["action"]["buttons"]
+        assert [button["reply"]["title"] for button in buttons] == [yes, no]
+        assert [button["reply"]["id"] for button in buttons] == ["buy_yes", "buy_no"]
+        assert yes.lower() != no.lower()
+        assert all(len(button["reply"]["title"]) <= 20 for button in buttons)
+        assert len(buttons) <= 3
+
+    log = ActionLog(log_path)
+    draft_winback(shop, log, MockMuse(), 1, max_tokens=1000)
+    before = _orders(shop)
+    stock = _stock(shop)
+    tapped = handle_reply(shop, log, _DeclineModel(), 1, "buy_no", max_tokens=1000)
+    assert tapped.intent == "decline"
+    assert tapped.order is None
+    assert tapped.confirm_offer_id is None
+    assert "we dey here when you ready" in tapped.message.lower()
+    assert "₦" not in tapped.message
+    assert _orders(shop) == before
+    assert _stock(shop) == stock
+    assert shop.execute("SELECT status FROM offers WHERE customer_id = 1").fetchone()["status"] == "declined"
+
+    titled = handle_reply(shop, log, _DeclineModel(), 1, "No, I no want", max_tokens=1000, from_voice=True)
+    assert titled.intent == "decline"
+    assert titled.order is None
+    assert _orders(shop) == before
+
+    draft_winback(shop, log, MockMuse(), 2, max_tokens=1000, language="en")
+    typed = handle_reply(shop, log, _DeclineModel(), 2, "no", max_tokens=1000, from_voice=False)
+    assert typed.intent == "decline"
+    assert typed.order is None
+    assert "we are here when you are ready" in typed.message.lower()
+    voice = handle_reply(shop, log, _DeclineModel(), 2, "No", max_tokens=1000, from_voice=True)
+    assert voice.intent == "decline"
+    assert voice.order is None
+    assert _stock(shop) == stock
+
+    draft_winback(shop, log, MockMuse(), 1, max_tokens=1000)
+    yes = handle_reply(shop, log, _DeclineModel(), 1, "Yes, hold am", max_tokens=1000)
+    assert yes.intent == "accept"
+    assert yes.order and yes.order["ok"]
+    assert _stock(shop) == stock - yes.order["qty"]

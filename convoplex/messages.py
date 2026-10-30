@@ -516,21 +516,53 @@ def confirm_hold_message(ctx: dict, product_name: str | None, price_ngn: int | N
     return ask
 
 
-def decline_message(ctx: dict) -> str:
-    first = _first(ctx["full_name"])
-    area = ctx.get("retailer_area") or ctx["area"]
+def substitute_message(ctx: dict, missing: str, product_name: str, price_ngn: int) -> str:
+    """The shop does not stock `missing`. Offer the in-stock alternative at the database price.
+
+    This is a question, not a goodbye. The Yes button is attached by the caller.
+    """
+    price = naira(price_ngn)
+    brand = (missing or "").strip() or "That one"
+    product = (product_name or "").strip() or "the one we have"
     code = _code(ctx)
     if code == "pcm":
-        return f"No wahala, {first}. Whenever you ready, we dey for {area}. Thank you."
+        return (
+            f"{brand} no dey for our shop o, but {product} dey, na {price} now. "
+            f"Make I hold one for you?"
+        )
     if code == "ig":
-        return f"Ọ dị mma, {first}. Mgbe ị dị njikere, anyị nọ na {area}. Daalụ."
+        return (
+            f"{brand} adịghị n'ụlọ ahịa anyị, mana {product} dị, ọ bụ {price} ugbu a. "
+            f"Ka m chekwaara gị otu?"
+        )
     if code == "yo":
-        return f"Kò sí wàhálà, {first}. Nígbà tí o bá ṣetán, a wà ní {area}. O ṣeun."
+        return (
+            f"{brand} kò sí ní ṣọ́ọ̀bù wa, ṣùgbọ́n {product} wà, ó jẹ́ {price} báyìí. "
+            f"Kí n fi ọ̀kan pamọ́ fún ọ?"
+        )
     if code == "ha":
-        return f"Babu matsala, {first}. Idan ka shirya, muna nan a {area}. Na gode."
+        return (
+            f"{brand} babu a shagonmu, amma {product} yana nan, shi ne {price} yanzu. "
+            f"In ajiye ɗaya maka ka?"
+        )
     return (
-        f"No problem, {first}. We will be here in {area} whenever you are ready. Thank you."
+        f"We don't have {brand}. {product} is in stock at {price}. "
+        f"Shall I set one aside for you?"
     )
+
+
+def decline_message(ctx: dict) -> str:
+    first = _first(ctx["full_name"])
+    code = _code(ctx)
+    if code == "pcm":
+        return f"No wahala, {first}. We dey here when you ready."
+    if code == "ig":
+        return f"Ọ dị mma, {first}. Anyị nọ ebe a mgbe ị dị njikere."
+    if code == "yo":
+        return f"Kò sí wàhálà, {first}. A wà níbí nígbà tí o bá ṣetán."
+    if code == "ha":
+        return f"Babu matsala, {first}. Muna nan idan ka shirya."
+    return f"No problem, {first}. We are here when you are ready."
 
 
 def question_message(ctx: dict, product_name: str, price_ngn: int | None, stock_qty: int | None) -> str:
