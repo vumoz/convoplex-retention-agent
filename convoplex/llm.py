@@ -17,6 +17,7 @@ import httpx
 from convoplex.config import MIN_TOOL_TOKENS
 from convoplex.messages import (
     accept_message,
+    customer_wants_delivery,
     decline_message,
     out_of_stock_message,
     question_message,
@@ -75,6 +76,24 @@ _EXPLICIT_NO = re.compile(
     r"|(?<![a-z'])\bno\b(?!\s+wahala)",
     re.IGNORECASE,
 )
+
+
+_WAN_BUY = re.compile(r"\bi wan buy(?: am)?\b", re.IGNORECASE)
+_EHEN_OYA = re.compile(r"\b(?:ehen|oya)\b", re.IGNORECASE)
+_WILL_TAKE = re.compile(r"\bi(?:'ll| will) take\b", re.IGNORECASE)
+
+
+def clear_affirmative(text: str | None) -> bool:
+    """A yes the shop can act on. 'won't buy' is not one of these."""
+    folded = (text or "").replace("’", "'").replace("‘", "'")
+    lowered = folded.lower()
+    if _WAN_BUY.search(folded) or _EHEN_OYA.search(folded) or _WILL_TAKE.search(folded):
+        return True
+    if any(_contains(lowered, phrase) for phrase in EXPLICIT_ACCEPT):
+        return True
+    if any(_contains(lowered, phrase) for phrase in SOFT_ACCEPT):
+        return True
+    return customer_wants_delivery(folded)
 
 
 def explicit_refusal(text: str | None) -> bool:

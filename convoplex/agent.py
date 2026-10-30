@@ -8,7 +8,9 @@ import sqlite3
 from dataclasses import dataclass, field
 
 from convoplex.actionlog import ActionLog
+from convoplex.commercial import commercial_payload, reconcile_text
 from convoplex.context import agent_context
+from convoplex.execution import ExecutionContext, audit_payload, scope_arguments
 from convoplex.languages import CONFIRM, guard_reply, message_asks_something_else, message_is_language_only
 from convoplex.lexicon import clarify_question, hold_line, normalize_phrase
 from convoplex.integrations.whatsapp import (
@@ -22,6 +24,7 @@ from convoplex.llm import (
     LLMError,
     ToolCall,
     classify_reply,
+    clear_affirmative,
     explicit_refusal,
     purchase_is_ambiguous,
     split_intent,
@@ -37,6 +40,7 @@ from convoplex.messages import (
     question_message,
     winback_message,
 )
+from convoplex.purchase import confirm_purchase, note_clarification, note_declined, requested_qty
 from convoplex.money import naira
 from convoplex.prompts import build_messages
 from convoplex.tools import TOOLS, execute_tool, mark_offer_declined, mark_offer_sent
@@ -166,7 +170,10 @@ def _run(
         # chat API accepts ("none" is HTTP 400). A length finish must not
         # double the budget: that retry spent most of the live language switch.
         reply_kwargs = {"reasoning_effort": "minimal", "retry_on_length": False}
-    decision = _reply_decision(user_text, profile, log, customer_id, from_voice) if task == "reply" else None
+    context = ExecutionContext.for_customer(profile)
+    decision = _reply_decision(user_text, profile, from_voice) if task == "reply" else None
+    if decision == "accept" and profile.get("open_offer"):
+        _record_confirmation(conn, profile, user_text)
     clarify_question_text = None
     blocked_repeat_ask = False
     learned_this_turn = False
@@ -199,6 +206,35 @@ def _run(
                     "arguments": call.arguments,
                 },
             )
+            if context is not None and isinstance(call.arguments, dict):
+                _scoped, denial = scope_arguments(call.name, call.arguments, context)
+                if denial and call.name == "ask_phrase":
+                    log.append(
+                        kind="audit",
+                        actor="tool",
+                        payload=audit_payload(context, tool=call.name, reason="identity_mismatch"),
+                    )
+                    result = denial
+                    log.append(
+                        kind="tool_result",
+                        actor="tool",
+                        payload={
+                            "customer_id": customer_id,
+                            "task": task,
+                            "tool_call_id": call.id,
+                            "name": call.name,
+                            "ok": False,
+                            "result": result,
+                        },
+                    )
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call.id,
+                            "content": json.dumps(result, ensure_ascii=False),
+                        }
+                    )
+                    continue
             if call.name == "ask_phrase":
                 if clarify_question_text is not None or learned_this_turn:
                     phrase = normalize_phrase((call.arguments or {}).get("phrase"))
@@ -216,7 +252,7 @@ def _run(
                     elif result.get("already_asked"):
                         blocked_repeat_ask = True
             else:
-                result = execute_tool(conn, call.name, call.arguments)
+                result = execute_tool(conn, call.name, call.arguments, context=context, log=log)
             if call.name == "learn_phrase" and result.get("ok"):
                 learned_this_turn = True
                 log.append(
@@ -317,12 +353,16 @@ def _run(
         and order is None
         and profile.get("open_offer")
         and not clarify_question_text
+        and decision == "accept"
     ):
         if not delivery:
-            delivery = _required_delivery(conn, log, customer_id, profile, trace)
-        order = _fallback_place(conn, log, customer_id, profile, trace, user_text or "")
+            delivery = _required_delivery(conn, log, customer_id, profile, trace, context)
+        order = _fallback_place(conn, log, customer_id, profile, trace, user_text or "", context)
         if order and order.get("ok"):
             intent = "accept"
+        else:
+            intent = "question"
+            order = None
 
     if task == "reply":
         text = _strip_thread_greeting(text, profile.get("retailer_name") or "")
@@ -334,9 +374,14 @@ def _run(
         intent = "question"
         order = None
         held = profile.get("open_offer") or {}
-        text = confirm_hold_message(profile, held.get("product_name"), held.get("offer_price_ngn"))
+        already = False
         if held.get("offer_id") is not None:
+            already = note_clarification(conn, profile, held)
+        text = confirm_hold_message(profile, held.get("product_name"), held.get("offer_price_ngn"))
+        if held.get("offer_id") is not None and not already:
             confirm_offer_id = int(held["offer_id"])
+        elif already:
+            text = offer_price_clause(profile, held.get("product_name"), held.get("offer_price_ngn")) or text
 
     if task == "winback" and offer and offer.get("ok") and "₦" not in text:
         text = winback_message(profile, offer)
@@ -377,7 +422,19 @@ def _run(
         mark_offer_sent(conn, int(offer["offer_id"]), text, language=profile.get("language"))
         offer = {**offer, "status": "sent", "message": text}
     if task == "reply" and intent == "decline" and profile.get("open_offer") and not clarify_question_text:
+        note_declined(conn, profile, profile["open_offer"])
         mark_offer_declined(conn, int(profile["open_offer"]["offer_id"]))
+    commercial = _commercial_for(conn, profile, offer if task == "winback" else profile.get("open_offer"), order, delivery)
+    text = reconcile_text(
+        text,
+        intent,
+        profile,
+        commercial,
+        order=order,
+        delivery=delivery,
+        confirm=decision == "confirm" and confirm_offer_id is not None,
+    )
+    text = guard_reply(text, profile.get("language"))
 
     payload = {
         "customer_id": customer_id,
@@ -388,6 +445,12 @@ def _run(
     }
     if confirm_offer_id is not None:
         payload["confirm_offer_id"] = confirm_offer_id
+    if commercial:
+        payload["commercial"] = {
+            key: value
+            for key, value in commercial.items()
+            if key != "other_product_names"
+        }
     log.append(
         kind="message",
         actor="agent",
@@ -510,29 +573,29 @@ def _resolve_ask(log: ActionLog, customer_id: int, arguments: dict, profile: dic
     }
 
 
-def _reply_decision(user_text: str | None, profile: dict, log: ActionLog, customer_id: int, from_voice: bool) -> str | None:
+def _reply_decision(user_text: str | None, profile: dict, from_voice: bool) -> str | None:
     """accept, decline, confirm, or None to let the model decide.
 
-    A Broken English voice note that says "won't buy" is "wan buy" when an
-    offer is open. Other customers are asked once, then a repeat accepts.
+    Repetition is never consent. A Broken English voice note heard as
+    "won't buy" asks once. An order waits for a clear yes or the Yes button.
     """
     if not (user_text or "").strip():
         return None
+    offer = profile.get("open_offer") or {}
+    offer_id = offer.get("offer_id")
     choice = _button_choice(user_text)
-    if choice == "yes":
-        return "accept"
     if choice == "no":
         return "decline"
+    if choice == "yes":
+        return "accept" if offer_id else None
     if explicit_refusal(user_text):
         return "decline"
-    offer = profile.get("open_offer") or {}
-    if _pcm_voice_wants(user_text, from_voice, profile.get("language"), offer):
+    if clear_affirmative(user_text) and offer_id:
         return "accept"
-    offer_id = offer.get("offer_id")
-    if purchase_is_ambiguous(user_text) and offer_id is not None:
-        if _confirm_already_asked(log, customer_id, int(offer_id)):
-            return "accept"
+    if _pcm_voice_clarify(user_text, from_voice, profile.get("language"), offer):
         return "confirm"
+    if purchase_is_ambiguous(user_text) and offer_id is not None:
+        return "decline"
     return None
 
 
@@ -545,11 +608,11 @@ def _button_choice(text: str | None) -> str | None:
     return None
 
 
-def _pcm_voice_wants(text: str, from_voice: bool, language: str | None, offer: dict) -> bool:
-    """Transcriber writes Pidgin 'wan buy' as 'won't buy'. That is a yes."""
+def _pcm_voice_clarify(text: str, from_voice: bool, language: str | None, offer: dict) -> bool:
+    """Voice 'won't buy' on a Broken English thread is one clarify, not an order."""
     if not from_voice or language != "pcm" or not offer:
         return False
-    if explicit_refusal(text):
+    if explicit_refusal(text) or clear_affirmative(text):
         return False
     folded = (text or "").replace("’", "'").replace("‘", "'")
     return bool(
@@ -561,17 +624,38 @@ def _pcm_voice_wants(text: str, from_voice: bool, language: str | None, offer: d
     )
 
 
-def _confirm_already_asked(log: ActionLog, customer_id: int, offer_id: int) -> bool:
-    last = None
-    for entry in log.read_all():
-        if entry.get("kind") != "message" or entry.get("actor") != "agent":
-            continue
-        payload = entry.get("payload") or {}
-        if int(payload.get("customer_id") or 0) != int(customer_id):
-            continue
-        if payload.get("direction") == "out":
-            last = payload
-    return bool(last and int(last.get("confirm_offer_id") or 0) == int(offer_id))
+def _record_confirmation(conn, profile: dict, user_text: str | None) -> None:
+    offer = profile.get("open_offer") or {}
+    if not offer.get("offer_id") or not offer.get("product_id"):
+        return
+    confirm_purchase(
+        conn,
+        customer_id=int(profile.get("id") or profile["customer_id"]),
+        retailer_id=int(profile["retailer_id"]),
+        product_id=int(offer["product_id"]),
+        qty=requested_qty(user_text, profile, offer),
+        offer_id=int(offer["offer_id"]),
+    )
+
+
+def _commercial_for(conn, profile: dict, offer: dict | None, order: dict | None, delivery: dict | None) -> dict | None:
+    names = [
+        row["name"]
+        for row in conn.execute(
+            "SELECT name FROM products WHERE retailer_id = ?",
+            (int(profile["retailer_id"]),),
+        ).fetchall()
+    ]
+    held = offer if isinstance(offer, dict) else None
+    if held and held.get("ok") is False:
+        held = None
+    return commercial_payload(
+        profile,
+        offer=held,
+        order=order if isinstance(order, dict) and order.get("ok") else None,
+        delivery=delivery,
+        other_product_names=names,
+    )
 
 
 def _ensure_offer_price(text: str, profile: dict) -> str:
@@ -662,16 +746,13 @@ def _fallback_place(
     profile: dict,
     trace: list[str],
     user_text: str,
+    context: ExecutionContext,
 ) -> dict:
     offer = profile["open_offer"]
-    stock = int(offer.get("stock_qty") or 1)
-    numbers = [int(number) for number in re.findall(r"\d+", user_text)]
-    requested = numbers[-1] if numbers else int(profile.get("suggested_qty") or 1)
-    qty = max(1, min(requested, stock))
     arguments = {
         "customer_id": customer_id,
         "product_id": offer["product_id"],
-        "qty": qty,
+        "qty": requested_qty(user_text, profile, offer),
         "offer_id": offer["offer_id"],
     }
     trace.append("place_order")
@@ -687,7 +768,7 @@ def _fallback_place(
             "source": "intent_fallback",
         },
     )
-    result = execute_tool(conn, "place_order", arguments)
+    result = execute_tool(conn, "place_order", arguments, context=context, log=log)
     log.append(
         kind="tool_result",
         actor="tool",
@@ -704,7 +785,7 @@ def _fallback_place(
     return result
 
 
-def _required_delivery(conn, log: ActionLog, customer_id: int, profile: dict, trace: list[str]) -> dict | None:
+def _required_delivery(conn, log: ActionLog, customer_id: int, profile: dict, trace: list[str], context: ExecutionContext) -> dict | None:
     arguments = {"retailer_id": profile["retailer_id"], "customer_id": customer_id}
     trace.append("get_delivery_options")
     log.append(
@@ -719,7 +800,7 @@ def _required_delivery(conn, log: ActionLog, customer_id: int, profile: dict, tr
             "source": "delivery_required",
         },
     )
-    result = execute_tool(conn, "get_delivery_options", arguments)
+    result = execute_tool(conn, "get_delivery_options", arguments, context=context, log=log)
     log.append(
         kind="tool_result",
         actor="tool",

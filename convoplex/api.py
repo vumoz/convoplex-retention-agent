@@ -62,6 +62,7 @@ from convoplex.languages import clean_language, language_label, save_language
 from convoplex.lexicon import markdown_export, public_rows, remove_phrase, restore_phrase
 from convoplex.llm import LLMError, LiveMuse, MockMuse
 from convoplex.metrics import snapshot
+from convoplex.runtime import readiness_problems, stored_channel, store_channel
 from convoplex.synthetic.generate import DEFAULT_CUSTOMERS, DEFAULT_SEED, generate, reset_and_seed, seed_if_empty
 from convoplex.whatsapp_flow import (
     process_messages,
@@ -107,6 +108,86 @@ class AdminIn(BaseModel):
 
 class LanguageIn(BaseModel):
     language: str = Field(min_length=2, max_length=8)
+
+
+def _bind_channel(app) -> str:
+    """Every request reads the channel from the database so instances agree."""
+    current = app.state.settings
+    try:
+        conn = open_db(current)
+    except Exception:
+        return app.state.channel
+    try:
+        channel = stored_channel(conn, current.channel)
+    finally:
+        conn.close()
+    if app.state.channel != channel or current.channel != channel:
+        app.state.channel = channel
+        app.state.settings = current.with_channel(channel)
+    return channel
+
+
+def _webhook_payload(raw: bytes) -> dict:
+    try:
+        payload = json.loads(raw or b"{}")
+    except json.JSONDecodeError:
+        raise HTTPException(400, "webhook body must be JSON") from None
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "webhook body must be a JSON object")
+    return payload
+
+
+def _ingest_whatsapp(request: Request, background: BackgroundTasks, payload: dict) -> dict:
+    """Apply a verified or admin-simulated inbound event. Empty identities are ignored."""
+    current = request.app.state.settings
+    store = store_for(current)
+    demo = normalize_phone(current.whatsapp_demo_to)
+    status_count = 0
+    if demo:
+        status_count = record_statuses(current, request.app.state.log, store, parse_statuses(payload))
+    accepted = []
+    duplicates: list[str] = []
+    ignored = 0
+    moment = datetime.now(timezone.utc)
+    for item in parse_inbound(payload):
+        sender = normalize_phone(item.from_phone)
+        if not item.message_id or not demo or not sender or sender != demo:
+            ignored += 1
+            continue
+        if item.kind not in {"text", "audio", "interactive"}:
+            ignored += 1
+            continue
+        public = public_wamid(item.message_id)
+        if not store.claim(public["wamid_hash"]):
+            duplicates.append(public["wamid_tail"])
+            continue
+        store.note_inbound(stamp_from_message(item.timestamp, moment))
+        accepted.append(item)
+    if accepted:
+        # 200 goes out before the reply is generated. On Vercel Python,
+        # FastAPI BackgroundTasks keep running after the response (the
+        # waitUntil equivalent, vercel/vercel#14011), so Meta's webhook
+        # timeout is not spent on the model or transcription call.
+        background.add_task(
+            process_messages,
+            current,
+            request.app.state.channel,
+            request.app.state.log,
+            CappedLLM(current, request.app.state.live_llm, request.app.state.mock_llm),
+            store,
+            accepted,
+            http=request.app.state.whatsapp_http,
+            asr_http=request.app.state.http_client,
+            max_tokens=current.max_tokens,
+        )
+    return {
+        "status": "ok",
+        "processed": bool(accepted),
+        "accepted": [public_wamid(item.message_id)["wamid_tail"] for item in accepted],
+        "duplicates": duplicates,
+        "ignored": ignored,
+        "statuses": status_count,
+    }
 
 
 def build_llm(settings: Settings):
@@ -164,6 +245,7 @@ def create_app(settings: Settings | None = None, *, generate_if_missing: bool = 
                 _stamp(denied)
                 log_access(request, 413)
                 return denied
+        _bind_channel(request.app)
         response = await call_next(request)
         _stamp(response)
         log_access(request, response.status_code)
@@ -232,9 +314,11 @@ def create_app(settings: Settings | None = None, *, generate_if_missing: bool = 
         try:
             as_of = scenario_as_of(conn).isoformat()
             label = SYNTHETIC_LABEL
+            channel = stored_channel(conn, settings.channel)
         finally:
             conn.close()
-        return {
+        problems = readiness_problems(settings, channel)
+        body = {
             "service": "convoplex-retention-agent",
             "version": __version__,
             "llm_mode": settings.llm_mode,
@@ -246,14 +330,26 @@ def create_app(settings: Settings | None = None, *, generate_if_missing: bool = 
             "synthetic": True,
             "label": label,
             "dashboard": True,
-            "channel": app.state.channel,
+            "channel": channel,
+            "profile": getattr(settings, "profile", "local"),
+            "outbound": "on" if getattr(settings, "outbound_enabled", True) else "off",
+            "ready": not problems,
+            "problems": problems,
         }
+        if problems:
+            return JSONResponse(body, status_code=503)
+        return body
 
     @app.get("/v1/admin/session")
     def admin_session(request: Request):
         current = request.app.state.settings
-        required = bool(current.admin_token)
-        return {"required": required, "admin": (not required) or is_admin(request, current)}
+        profile = getattr(current, "profile", "local")
+        required = bool(current.admin_token) or profile in {"public", "pilot"}
+        if profile in {"public", "pilot"} and not current.admin_token:
+            admin = False
+        else:
+            admin = (not current.admin_token) or is_admin(request, current)
+        return {"required": required, "admin": admin}
 
     @app.post("/v1/admin/login")
     def admin_login(body: AdminIn, request: Request):
@@ -478,8 +574,14 @@ def create_app(settings: Settings | None = None, *, generate_if_missing: bool = 
 
     @app.post("/v1/whatsapp/channel", dependencies=[Depends(admin_dep)])
     def whatsapp_channel(body: ChannelIn):
+        current = app.state.settings
+        conn = open_db(current)
+        try:
+            store_channel(conn, body.channel)
+        finally:
+            conn.close()
         app.state.channel = body.channel
-        app.state.settings = settings.with_channel(body.channel)
+        app.state.settings = current.with_channel(body.channel)
         return status_view(app.state.settings, app.state.channel, store_for(app.state.settings))
 
     @app.post("/v1/whatsapp/customer", dependencies=[Depends(admin_dep)])
@@ -558,57 +660,29 @@ def create_app(settings: Settings | None = None, *, generate_if_missing: bool = 
             raise HTTPException(403, "WHATSAPP_APP_SECRET is required for live WhatsApp webhooks")
         if secret and not signature_matches(raw, request.headers.get("x-hub-signature-256"), secret):
             raise HTTPException(403, "invalid signature")
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError:
-            raise HTTPException(400, "webhook body must be JSON") from None
-        if not isinstance(payload, dict):
-            raise HTTPException(400, "webhook body must be a JSON object")
-        store = store_for(current)
-        status_count = record_statuses(current, app.state.log, store, parse_statuses(payload))
-        demo = normalize_phone(current.whatsapp_demo_to)
-        accepted: list[InboundMessage] = []
-        duplicates: list[str] = []
-        ignored = 0
-        moment = datetime.now(timezone.utc)
-        for item in parse_inbound(payload):
-            if not item.message_id or normalize_phone(item.from_phone) != demo:
-                ignored += 1
-                continue
-            if item.kind not in {"text", "audio", "interactive"}:
-                ignored += 1
-                continue
-            public = public_wamid(item.message_id)
-            if not store.claim(public["wamid_hash"]):
-                duplicates.append(public["wamid_tail"])
-                continue
-            store.note_inbound(stamp_from_message(item.timestamp, moment))
-            accepted.append(item)
-        if accepted:
-            # 200 goes out before the reply is generated. On Vercel Python,
-            # FastAPI BackgroundTasks keep running after the response (the
-            # waitUntil equivalent, vercel/vercel#14011), so Meta's webhook
-            # timeout is not spent on the model or transcription call.
-            background.add_task(
-                process_messages,
-                current,
-                app.state.channel,
-                app.state.log,
-                CappedLLM(current, app.state.live_llm, app.state.mock_llm),
-                store,
-                accepted,
-                http=app.state.whatsapp_http,
-                asr_http=app.state.http_client,
-                max_tokens=current.max_tokens,
-            )
-        return {
-            "status": "ok",
-            "processed": bool(accepted),
-            "accepted": [public_wamid(item.message_id)["wamid_tail"] for item in accepted],
-            "duplicates": duplicates,
-            "ignored": ignored,
-            "statuses": status_count,
-        }
+        payload = _webhook_payload(raw)
+        if not live:
+            # The provider webhook does not mutate the book in simulator mode.
+            # Use POST /v1/whatsapp/simulate, which requires the admin token.
+            return {
+                "status": "ok",
+                "processed": False,
+                "accepted": [],
+                "duplicates": [],
+                "ignored": len(parse_inbound(payload)),
+                "statuses": 0,
+                "reason": "simulator",
+            }
+        return _ingest_whatsapp(request, background, payload)
+
+    @app.post("/v1/whatsapp/simulate", dependencies=[Depends(admin_dep)])
+    async def whatsapp_simulate(request: Request, background: BackgroundTasks):
+        """Admin-only stand-in for an inbound WhatsApp event while the channel is simulator."""
+        if request.app.state.channel == "whatsapp":
+            raise HTTPException(409, "simulation is only available on the simulator channel")
+        raw = await request.body()
+        payload = _webhook_payload(raw)
+        return _ingest_whatsapp(request, background, payload)
 
     @app.post("/v1/voice/transcribe", dependencies=[Depends(admin_dep), Depends(try_dep)])
     def voice_transcribe(

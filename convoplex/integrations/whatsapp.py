@@ -389,8 +389,13 @@ def require_allowlisted(
     token: str | None,
     phone_number_id: str | None,
     requested: str | None,
+    outbound: bool = True,
 ) -> str:
     """Return the demo digits, or refuse. The requested number is never used unless it is the demo."""
+    if channel == "whatsapp" and not outbound:
+        raise SendBlocked(
+            "Outbound messaging is paused (CONVOPLEX_OUTBOUND=off). Pending drafts are kept. Nothing was sent."
+        )
     if channel != "whatsapp":
         raise SendBlocked(
             "Live sending is off. Set CONVOPLEX_CHANNEL=whatsapp or switch the dashboard to WhatsApp live. "
@@ -493,6 +498,7 @@ class WhatsAppClient:
             token=self.settings.whatsapp_token,
             phone_number_id=self.settings.whatsapp_phone_number_id,
             requested=requested,
+            outbound=getattr(self.settings, "outbound_enabled", True),
         )
 
     def _version(self) -> str:

@@ -135,7 +135,7 @@ def test_whatsapp_keyword_switches_and_menu_does_not_call_the_agent(shop, tmp_pa
             }
         ],
     }
-    sent = client.post("/v1/whatsapp/webhook", json=payload)
+    sent = client.post("/v1/whatsapp/simulate", json=payload)
     assert sent.status_code == 200
     assert sent.json()["processed"] is True
     row = shop.execute("SELECT language, language_opted_in, language_channel FROM customers WHERE id = 2").fetchone()

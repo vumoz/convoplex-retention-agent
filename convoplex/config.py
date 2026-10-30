@@ -7,6 +7,8 @@ import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from convoplex.runtime import clean_profile, outbound_enabled
+
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_BASE_URL = "https://api.meta.ai/v1"
 DEFAULT_CHAT_MODEL = "muse-spark-1.3"
@@ -69,6 +71,8 @@ class Settings:
     meta_daily_cap: int = 80
     try_ip_limit: int = 60
     try_window_seconds: int = 3600
+    profile: str = "local"
+    outbound_enabled: bool = True
 
     def with_llm_mode(self, mode: str) -> Settings:
         resolved = resolve_llm_mode(mode, api_key=self.meta_api_key)
@@ -120,6 +124,8 @@ class Settings:
             meta_daily_cap=_positive_int("META_DAILY_CAP", 80),
             try_ip_limit=_positive_int("TRY_IP_LIMIT", 60),
             try_window_seconds=_positive_int("TRY_WINDOW_SECONDS", 3600),
+            profile=clean_profile(os.environ.get("CONVOPLEX_PROFILE")),
+            outbound_enabled=outbound_enabled(os.environ.get("CONVOPLEX_OUTBOUND")),
         )
 
 

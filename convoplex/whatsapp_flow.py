@@ -58,9 +58,6 @@ from convoplex.llm import LLMError, LiveMuse, MockMuse
 from convoplex.money import naira
 from convoplex.whatsapp_state import WhatsAppStore, store_path, window_open
 
-FALLBACK_CUSTOMER_ID = 184
-
-
 def store_for(settings: Settings) -> WhatsAppStore:
     if settings.database_url:
         return WhatsAppStore(
@@ -160,12 +157,10 @@ def _masked_demo(settings: Settings) -> str:
 
 
 def resolve_demo_customer(store: WhatsAppStore, conn) -> int | None:
+    """The customer an operator selected. Unmapped senders never become customer 184."""
     chosen = store.demo_customer_id()
     if chosen is not None and get_customer(conn, chosen) is not None:
         return chosen
-    if get_customer(conn, FALLBACK_CUSTOMER_ID) is not None:
-        store.set_demo_customer(FALLBACK_CUSTOMER_ID)
-        return FALLBACK_CUSTOMER_ID
     return None
 
 
@@ -192,9 +187,7 @@ def record_statuses(
         if not item.message_id or item.status not in {"sent", "delivered", "read", "failed"}:
             continue
         recipient = normalize_phone(item.recipient)
-        if recipient and demo and recipient != demo:
-            continue
-        if recipient and not demo:
+        if not recipient or not demo or recipient != demo:
             continue
         public = public_wamid(item.message_id)
         status = store.set_status(public["wamid_hash"], item.status)

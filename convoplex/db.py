@@ -161,10 +161,36 @@ CREATE TABLE IF NOT EXISTS lexicon_daily (
     hits INTEGER NOT NULL,
     PRIMARY KEY (customer_id, day)
 );
+
+CREATE TABLE IF NOT EXISTS purchase_states (
+    id INTEGER PRIMARY KEY,
+    customer_id INTEGER NOT NULL,
+    retailer_id INTEGER NOT NULL,
+    offer_id INTEGER,
+    product_id INTEGER,
+    qty INTEGER NOT NULL,
+    state TEXT NOT NULL CHECK (state IN (
+        'offer_presented', 'clarification_required', 'confirmed', 'declined', 'expired'
+    )),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    expires_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_purchase_customer ON purchase_states(customer_id, state);
 """
 
 # Tables whose INSERT should return the new id on Postgres (sqlite uses lastrowid).
-ID_TABLES = ("retailers", "products", "customers", "offers", "orders", "order_items", "lexicon")
+ID_TABLES = (
+    "retailers",
+    "products",
+    "customers",
+    "offers",
+    "orders",
+    "order_items",
+    "lexicon",
+    "purchase_states",
+)
 
 
 def connect(path: Path | str) -> sqlite3.Connection:
@@ -424,6 +450,9 @@ def open_db(settings):
         from convoplex.lexicon import ensure_lexicon
 
         ensure_lexicon(conn)
+        from convoplex.purchase import ensure_purchase_states
+
+        ensure_purchase_states(conn)
         return conn
     conn = connect(settings.db_path)
     conn.executescript(RUNTIME_TABLES)
@@ -431,6 +460,9 @@ def open_db(settings):
     from convoplex.lexicon import ensure_lexicon
 
     ensure_lexicon(conn)
+    from convoplex.purchase import ensure_purchase_states
+
+    ensure_purchase_states(conn)
     return conn
 
 
