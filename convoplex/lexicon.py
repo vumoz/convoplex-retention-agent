@@ -255,6 +255,10 @@ def learn_phrase(
     except (TypeError, ValueError):
         return {"ok": False, "error": "customer_id is required"}
     norm = normalize_phrase(phrase)
+    from convoplex.greeting import is_salutation_phrase
+
+    if is_salutation_phrase(norm):
+        return {"ok": False, "error": "That is a greeting, not a word to learn."}
     meaning_text = re.sub(r"\s+", " ", (meaning or "").strip())
     example_text = clean_example(example)
     reason = reject_reason(norm, meaning_text, example_text)

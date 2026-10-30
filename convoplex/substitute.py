@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 import unicodedata
 
+from convoplex.greeting import is_salutation_phrase
 from convoplex.languages import message_is_language_only, requested_language
 from convoplex.lexicon import normalize_phrase
 from convoplex.tools import find_products
@@ -146,7 +147,7 @@ def _content_words(text: str, lexicon: set[str]) -> list[str]:
     kept: list[str] = []
     for raw in _WORD.findall(text or ""):
         folded = _fold(raw)
-        if len(folded) < 3 or folded in _STOP:
+        if len(folded) < 3 or folded in _STOP or is_salutation_phrase(folded):
             continue
         if folded in lexicon or normalize_phrase(raw) in lexicon:
             continue
