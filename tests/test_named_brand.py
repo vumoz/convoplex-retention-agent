@@ -77,7 +77,7 @@ def test_voice_rice_then_no_then_mama_gold(shop, log_path):
     assert first.confirm_offer_id
     assert _product(shop, first.confirm_offer_id) == "Mama Gold Rice 50kg"
     assert "Mama Gold" in first.message
-    assert naira(70200) in first.message
+    assert naira(78000) in first.message
     assert "Cap Rice" not in first.message
     assert "40,788" not in first.message
     assert first.message.startswith("Customer,")
@@ -95,7 +95,7 @@ def test_voice_rice_then_no_then_mama_gold(shop, log_path):
     assert named.confirm_offer_id != first.confirm_offer_id
     assert _product(shop, named.confirm_offer_id) == "Mama Gold Rice 50kg"
     assert "Mama Gold" in named.message
-    assert naira(70200) in named.message
+    assert naira(78000) in named.message
     assert "Cap Rice" not in named.message
     assert "40,788" not in named.message
     assert "20" in named.message
@@ -121,7 +121,7 @@ def test_plain_rice_without_the_address_still_leads_with_mama_gold(shop, log_pat
     assert _product(shop, result.confirm_offer_id) == "Mama Gold Rice 50kg"
     assert "Mama Gold" in result.message
     assert "Cap Rice" not in result.message
-    assert naira(70200) in result.message
+    assert naira(78000) in result.message
 
 
 def test_brand_switch_both_ways(shop, log_path):
@@ -129,7 +129,7 @@ def test_brand_switch_both_ways(shop, log_path):
     log = ActionLog(log_path)
     mama = handle_reply(shop, log, _CapRiceModel(), 1, "What about Mama Gold", max_tokens=1000)
     assert _product(shop, mama.confirm_offer_id) == "Mama Gold Rice 50kg"
-    assert naira(70200) in mama.message
+    assert naira(78000) in mama.message
     assert "Cap Rice" not in mama.message
 
     cap = handle_reply(shop, log, _CapRiceModel(), 1, "What about Cap Rice", max_tokens=1000)
@@ -142,7 +142,7 @@ def test_brand_switch_both_ways(shop, log_path):
 
     back = handle_reply(shop, log, _CapRiceModel(), 1, "What about Mama Gold Rice", max_tokens=1000)
     assert _product(shop, back.confirm_offer_id) == "Mama Gold Rice 50kg"
-    assert naira(70200) in back.message
+    assert naira(78000) in back.message
     assert "Cap Rice" not in back.message
 
     fresh = ActionLog(log_path)
@@ -171,6 +171,121 @@ def test_picture_follows_the_brand_being_discussed(shop, log_path):
     )
     assert _product(shop, switched.image_offer_id) == "Mama Gold Rice 50kg"
     assert switched.image_offer_id != cap.confirm_offer_id
+
+
+def test_chinyere_transcript_sells_mama_gold_not_the_cap_rice_offer(shop, log_path):
+    """Live shape: favourite rice is Mama Gold, the open offer is a different rice."""
+    shop.execute(
+        "UPDATE customers SET full_name = 'Chinyere Musa', language = 'pcm' WHERE id = 1"
+    )
+    shop.execute(
+        """
+        UPDATE retailers
+        SET name = 'Wuse Fresh Basket', city = 'Abuja', area = 'Wuse 2'
+        WHERE id = 1
+        """
+    )
+    shop.execute("UPDATE products SET price_ngn = 84460 WHERE id = 1")
+    shop.execute(
+        """
+        INSERT INTO products (retailer_id, sku, name, category, unit, price_ngn, stock_qty)
+        VALUES (1, 'RICE-25', 'Cap Rice 25kg', 'provisions', 'bag', 45320, 44)
+        """
+    )
+    cap_id = shop.execute("SELECT id FROM products WHERE sku = 'RICE-25'").fetchone()["id"]
+    shop.execute(
+        """
+        INSERT INTO offers (
+            retailer_id, customer_id, product_id, discount_percent,
+            list_price_ngn, offer_price_ngn, message, language, status, created_at
+        ) VALUES (1, 1, ?, 10, 45320, 40788, 'wrong bag', 'pcm', 'declined', '2026-10-30T18:00:00+00:00')
+        """,
+        (cap_id,),
+    )
+    shop.commit()
+    log = ActionLog(log_path)
+    shelf = naira(84460)
+
+    first = handle_reply(
+        shop,
+        log,
+        _CapRiceModel(),
+        1,
+        "My customer I won't buy rice.",
+        max_tokens=1000,
+        from_voice=True,
+    )
+    assert first.order is None
+    assert first.confirm_offer_id
+    assert _product(shop, first.confirm_offer_id) == "Mama Gold Rice 50kg"
+    assert first.message.startswith("My customer,")
+    assert "Mama Gold" in first.message
+    assert shelf in first.message
+    assert "Cap Rice" not in first.message
+    assert "40,788" not in first.message
+
+    refused = handle_reply(shop, log, _CapRiceModel(), 1, "buy_no", max_tokens=1000)
+    assert refused.intent == "decline"
+    assert refused.order is None
+    assert "no wahala" in refused.message.lower()
+    assert "chinyere" in refused.message.lower()
+
+    clarify = handle_reply(
+        shop,
+        log,
+        _CapRiceModel(),
+        1,
+        "I won't buy Mama gold rice. rice.",
+        max_tokens=1000,
+        from_voice=True,
+    )
+    assert clarify.intent == "question"
+    assert clarify.order is None
+    assert clarify.confirm_offer_id
+    assert _product(shop, clarify.confirm_offer_id) == "Mama Gold Rice 50kg"
+    assert "Mama Gold" in clarify.message
+    assert shelf in clarify.message
+    assert "Cap Rice" not in clarify.message
+    assert "40,788" not in clarify.message
+    assert "you wan buy am" in clarify.message.lower()
+
+    yes = handle_reply(shop, log, _CapRiceModel(), 1, "buy_yes", max_tokens=1000)
+    assert yes.intent == "accept"
+    assert yes.order["ok"] is True
+    assert yes.order["product_name"] == "Mama Gold Rice 50kg"
+    assert yes.order["unit_price_ngn"] == 84460
+
+    picture = handle_reply(
+        shop, log, _CapRiceModel(), 1, "show me the rice picture", max_tokens=1000
+    )
+    assert _product(shop, picture.image_offer_id) == "Mama Gold Rice 50kg"
+
+
+def test_when_she_has_not_bought_rice_the_shop_best_seller_wins(shop):
+    """No personal rice history: the shelf's best seller, not A-before-M."""
+    shop.execute(
+        """
+        INSERT INTO retailers (name, city, area, category_focus, phone)
+        VALUES ('Empty Basket', 'Abuja', 'Wuse', 'provisions', '+2348000001888')
+        """
+    )
+    shop.execute(
+        """
+        INSERT INTO products (retailer_id, sku, name, category, unit, price_ngn, stock_qty)
+        VALUES (2, 'RICE-25', 'Cap Rice 25kg', 'provisions', 'bag', 45320, 5)
+        """
+    )
+    shop.execute(
+        """
+        INSERT INTO products (retailer_id, sku, name, category, unit, price_ngn, stock_qty)
+        VALUES (2, 'RICE-50', 'Mama Gold Rice 50kg', 'provisions', 'bag', 84460, 40)
+        """
+    )
+    shop.commit()
+    from convoplex.tools import preferred_rice_product
+
+    chosen = preferred_rice_product(shop, 2, customer_id=99)
+    assert chosen["name"] == "Mama Gold Rice 50kg"
 
 
 def test_caprice_is_still_not_cap_rice(shop, log_path):

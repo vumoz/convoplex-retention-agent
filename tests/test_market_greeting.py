@@ -162,7 +162,7 @@ def test_voice_transcript_without_an_open_offer_still_quotes_the_rice(shop, log_
             lowered = result.message.lower()
             assert lowered.startswith("my customer") or lowered.startswith("customer,")
             assert "mama gold" in lowered
-            assert "₦70,200" in result.message
+            assert "₦78,000" in result.message
             assert result.message.strip(" .,!") != "My customer"
             assert "no dey" not in lowered
             assert result.order is None
@@ -270,7 +270,7 @@ def test_voice_webhook_sends_product_and_price_not_just_the_address(shop, tmp_pa
     outgoing = bodies[-1]
     assert outgoing.strip(" .,!") != "My customer"
     assert "Mama Gold" in outgoing
-    assert "₦70,200" in outgoing
+    assert "₦78,000" in outgoing
     assert "my customer" in outgoing.lower()
 
     calls.clear()
@@ -313,7 +313,7 @@ def test_voice_webhook_sends_product_and_price_not_just_the_address(shop, tmp_pa
             again_bodies.append(body["text"]["body"])
     assert again_bodies
     assert "Mama Gold" in again_bodies[-1]
-    assert "₦70,200" in again_bodies[-1]
+    assert "₦78,000" in again_bodies[-1]
     assert again_bodies[-1].strip(" .,!") != "My customer"
 
 

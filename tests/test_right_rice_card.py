@@ -166,9 +166,9 @@ def test_rice_picture_stays_on_this_customers_mama_gold(shop, log_path):
         assert row["city"] == "Lagos"
         assert int(row["customer_id"]) == 1
         assert int(row["retailer_id"]) == 1
-        assert int(row["offer_price_ngn"]) == 70200
+        assert int(row["offer_price_ngn"]) == 78000
         assert "Mama Gold" in result.message
-        assert naira(70200) in result.message
+        assert naira(78000) in result.message
         assert "Cap Rice" not in result.message
         assert "Wuse" not in result.message
         assert "40,788" not in result.message

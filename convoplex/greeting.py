@@ -269,7 +269,7 @@ def present_offer(conn, profile: dict, text: str) -> dict | None:
     if named is not None:
         return _ensure_offer(conn, profile, held, named)
     if is_generic_rice(text) or is_generic_rice(sale_focus(text)):
-        preferred = preferred_rice_product(conn, retailer_id, profile.get("favourite_product"))
+        preferred = preferred_rice_product(conn, retailer_id, customer_id=customer_id)
         if preferred is not None:
             return _ensure_offer(conn, profile, held, preferred)
     focus = sale_focus(text)
@@ -302,9 +302,11 @@ def _held_from_created(created: dict, customer_id: int) -> dict:
 
 
 def _ensure_offer(conn, profile: dict, held: dict | None, product) -> dict | None:
-    """Reuse a live offer for this product, or open a new one. A declined offer does not stick."""
-    from convoplex.tools import create_offer
+    """Price this product from its own offer, or from the shelf.
 
+    A Cap Rice discount is not applied to Mama Gold. A declined offer for the
+    same product still carries that product's price, on a fresh row Yes can use.
+    """
     product_id = int(product["id"])
     customer_id = int(profile.get("id") or profile["customer_id"])
     retailer_id = int(profile["retailer_id"])
@@ -314,8 +316,35 @@ def _ensure_offer(conn, profile: dict, held: dict | None, product) -> dict | Non
         and held.get("status") != "declined"
     ):
         return held
+    live = _offer_for_product(conn, customer_id, retailer_id, product_id, live_only=True)
+    if live is not None:
+        return live
+    previous = _offer_for_product(conn, customer_id, retailer_id, product_id, live_only=False)
+    if previous is not None:
+        return _insert_quote(
+            conn,
+            profile,
+            product,
+            list_price=int(previous["list_price_ngn"]),
+            offer_price=int(previous["offer_price_ngn"]),
+            discount=int(previous["discount_percent"]),
+        )
+    shelf = int(product["price_ngn"])
+    return _insert_quote(
+        conn,
+        profile,
+        product,
+        list_price=shelf,
+        offer_price=shelf,
+        discount=0,
+    )
+
+
+def _offer_for_product(conn, customer_id: int, retailer_id: int, product_id: int, *, live_only: bool):
+    statuses = ("drafted", "sent") if live_only else ("drafted", "sent", "declined")
+    placeholders = ", ".join("?" for _ in statuses)
     row = conn.execute(
-        """
+        f"""
         SELECT o.id, o.product_id, o.discount_percent, o.list_price_ngn, o.offer_price_ngn,
                o.status, p.name AS product_name, p.stock_qty
         FROM offers o
@@ -323,44 +352,84 @@ def _ensure_offer(conn, profile: dict, held: dict | None, product) -> dict | Non
         WHERE o.customer_id = ?
           AND o.retailer_id = ?
           AND o.product_id = ?
-          AND o.status IN ('drafted', 'sent')
+          AND o.status IN ({placeholders})
           AND p.stock_qty > 0
         ORDER BY o.id DESC
         LIMIT 1
         """,
-        (customer_id, retailer_id, product_id),
+        (customer_id, retailer_id, product_id, *statuses),
     ).fetchone()
-    if row is not None:
-        return {
-            "offer_id": int(row["id"]),
-            "product_id": int(row["product_id"]),
-            "product_name": row["product_name"],
-            "offer_price_ngn": int(row["offer_price_ngn"]),
-            "list_price_ngn": int(row["list_price_ngn"]),
-            "discount_percent": int(row["discount_percent"]),
-            "stock_qty": int(row["stock_qty"]),
-            "retailer_id": retailer_id,
-            "customer_id": customer_id,
-            "status": row["status"],
-        }
-    created = create_offer(
-        conn,
-        customer_id=customer_id,
-        discount_percent=10,
-        product_id=product_id,
-    )
-    if not created.get("ok"):
-        return held
-    return _held_from_created(created, customer_id)
+    if row is None:
+        return None
+    return {
+        "offer_id": int(row["id"]),
+        "product_id": int(row["product_id"]),
+        "product_name": row["product_name"],
+        "offer_price_ngn": int(row["offer_price_ngn"]),
+        "list_price_ngn": int(row["list_price_ngn"]),
+        "discount_percent": int(row["discount_percent"]),
+        "stock_qty": int(row["stock_qty"]),
+        "retailer_id": retailer_id,
+        "customer_id": customer_id,
+        "status": row["status"],
+    }
+
+
+def _insert_quote(conn, profile: dict, product, *, list_price: int, offer_price: int, discount: int) -> dict:
+    from datetime import datetime, timezone
+
+    from convoplex.db import transaction
+
+    customer_id = int(profile.get("id") or profile["customer_id"])
+    retailer_id = int(profile["retailer_id"])
+    created = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    with transaction(conn):
+        cursor = conn.execute(
+            """
+            INSERT INTO offers (
+                retailer_id, customer_id, product_id, discount_percent,
+                list_price_ngn, offer_price_ngn, message, language, status, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'drafted', ?)
+            """,
+            (
+                retailer_id,
+                customer_id,
+                int(product["id"]),
+                int(discount),
+                int(list_price),
+                int(offer_price),
+                None,
+                str(profile.get("language") or "en"),
+                created,
+            ),
+        )
+        offer_id = int(cursor.lastrowid)
+    return {
+        "offer_id": offer_id,
+        "product_id": int(product["id"]),
+        "product_name": product["name"],
+        "offer_price_ngn": int(offer_price),
+        "list_price_ngn": int(list_price),
+        "discount_percent": int(discount),
+        "stock_qty": int(product["stock_qty"]),
+        "retailer_id": retailer_id,
+        "customer_id": customer_id,
+        "status": "drafted",
+    }
 
 
 def _offer_matches(conn, profile: dict, offer: dict, focus: str) -> bool:
-    from convoplex.tools import find_products, is_generic_rice
+    from convoplex.tools import find_products, is_generic_rice, preferred_rice_product
 
     name = str(offer.get("product_name") or "").lower()
-    # "rice" is inside "Cap Rice" too. Generic rice means this shop's Mama Gold.
+    # "rice" is inside "Cap Rice" too. Generic rice is the bag she buys most.
     if is_generic_rice(focus):
-        return "mama gold" in name
+        preferred = preferred_rice_product(
+            conn,
+            int(profile.get("retailer_id") or offer.get("retailer_id") or 0),
+            customer_id=int(profile.get("id") or profile.get("customer_id") or 0),
+        )
+        return preferred is not None and int(preferred["id"]) == int(offer.get("product_id") or 0)
     if focus.lower() in name:
         return True
     retailer_id = int(profile.get("retailer_id") or offer.get("retailer_id") or 0)

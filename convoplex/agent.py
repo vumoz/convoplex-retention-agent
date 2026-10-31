@@ -235,6 +235,16 @@ def _run(
         decision = "greet"
     elif pivot and decision != "decline":
         decision = "pivot"
+    if (
+        task == "reply"
+        and decision != "decline"
+        and not asked_language
+        and (named_product is not None or generic_rice)
+    ):
+        # Brand and plain rice are chosen before clarify, greet, picture, or question.
+        discussed = present_offer(conn, profile, user_text or "")
+        if discussed:
+            profile["open_offer"] = discussed
     if decision == "accept" and profile.get("open_offer"):
         _record_confirmation(conn, profile, user_text)
     clarify_question_text = None
@@ -757,14 +767,20 @@ def _reply_decision(user_text: str | None, profile: dict, from_voice: bool) -> s
         return "accept" if offer_id else None
     if explicit_refusal(user_text):
         return "decline"
+    language = profile.get("language")
+    # English "I won't buy rice" still closes. Broken English voice "won't" asks once.
+    if language != "pcm" and purchase_is_ambiguous(user_text) and offer_id is not None:
+        return "decline"
+    if _pcm_voice_clarify(user_text, from_voice, language, offer) and _wont_buy(user_text):
+        return "confirm"
     # "I wan buy rice" names the goods. It is not a yes to whatever was offered last.
     if is_generic_rice(user_text):
         return None
     if clear_affirmative(user_text) and offer_id:
         return "accept"
-    if _pcm_voice_clarify(user_text, from_voice, profile.get("language"), offer):
+    if _pcm_voice_clarify(user_text, from_voice, language, offer):
         return "confirm"
-    if purchase_is_ambiguous(user_text) and offer_id is not None:
+    if purchase_is_ambiguous(user_text) and offer_id is not None and not is_generic_rice(user_text):
         return "decline"
     return None
 
@@ -777,6 +793,11 @@ def _button_choice(text: str | None) -> str | None:
     if folded == CONFIRM_YES_ID or folded in confirm_yes_titles():
         return "yes"
     return None
+
+
+def _wont_buy(text: str | None) -> bool:
+    folded = (text or "").replace("’", "'").replace("‘", "'")
+    return bool(re.search(r"\b(?:won'?t|wont)\b", folded, re.IGNORECASE))
 
 
 def _pcm_voice_clarify(text: str, from_voice: bool, language: str | None, offer: dict) -> bool:
