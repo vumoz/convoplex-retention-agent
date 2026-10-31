@@ -261,6 +261,100 @@ def test_chinyere_transcript_sells_mama_gold_not_the_cap_rice_offer(shop, log_pa
     assert _product(shop, picture.image_offer_id) == "Mama Gold Rice 50kg"
 
 
+def test_wont_buy_reuses_the_sent_mama_gold_offer_and_the_picture_follows_it(shop, log_path):
+    """Offer 6 is the live Mama Gold win-back. Offer 5 is a declined Cap Rice."""
+    shop.execute("UPDATE customers SET full_name = 'Chinyere Musa', language = 'pcm' WHERE id = 1")
+    shop.execute("UPDATE products SET price_ngn = 84460 WHERE id = 1")
+    shop.execute(
+        """
+        INSERT INTO products (retailer_id, sku, name, category, unit, price_ngn, stock_qty)
+        VALUES (1, 'RICE-25', 'Cap Rice 25kg', 'provisions', 'bag', 45320, 44)
+        """
+    )
+    cap_id = shop.execute("SELECT id FROM products WHERE sku = 'RICE-25'").fetchone()["id"]
+    shop.execute(
+        """
+        INSERT INTO offers (
+            retailer_id, customer_id, product_id, discount_percent,
+            list_price_ngn, offer_price_ngn, message, language, status, created_at
+        ) VALUES (1, 1, ?, 10, 45320, 40788, 'old', 'pcm', 'declined', '2026-10-30T18:00:00+00:00')
+        """,
+        (cap_id,),
+    )
+    shop.execute(
+        """
+        INSERT INTO offers (
+            retailer_id, customer_id, product_id, discount_percent,
+            list_price_ngn, offer_price_ngn, message, language, status, created_at
+        ) VALUES (1, 1, 1, 10, 84460, 76014, 'win-back', 'pcm', 'sent', '2026-10-31T04:00:00+00:00')
+        """
+    )
+    shop.commit()
+    winback = shop.execute(
+        "SELECT id FROM offers WHERE customer_id = 1 AND status = 'sent'"
+    ).fetchone()["id"]
+    before = shop.execute("SELECT COUNT(*) AS n FROM offers").fetchone()["n"]
+    log = ActionLog(log_path)
+
+    clarify = handle_reply(
+        shop,
+        log,
+        _CapRiceModel(),
+        1,
+        "custom i won't buy rice so",
+        max_tokens=1000,
+        from_voice=True,
+    )
+    assert clarify.confirm_offer_id == winback
+    assert _product(shop, clarify.confirm_offer_id) == "Mama Gold Rice 50kg"
+    assert naira(76014) in clarify.message
+    assert "Cap Rice" not in clarify.message
+    assert "40,788" not in clarify.message
+    assert "84,460" not in clarify.message
+    assert shop.execute("SELECT COUNT(*) AS n FROM offers").fetchone()["n"] == before
+
+    named = handle_reply(
+        shop,
+        log,
+        _CapRiceModel(),
+        1,
+        "I won't buy but na Mama Gold price I won't buy.",
+        max_tokens=1000,
+        from_voice=True,
+    )
+    assert named.confirm_offer_id in (None, winback)
+    assert naira(76014) in named.message
+    assert "84,460" not in named.message
+    assert "Cap Rice" not in named.message
+    assert shop.execute("SELECT COUNT(*) AS n FROM offers").fetchone()["n"] == before
+
+    yes = handle_reply(shop, log, _CapRiceModel(), 1, "buy_yes", max_tokens=1000)
+    assert yes.order["ok"] is True
+    assert yes.order["offer_id"] == winback
+    assert yes.order["product_name"] == "Mama Gold Rice 50kg"
+    assert yes.order["unit_price_ngn"] == 76014
+    assert shop.execute("SELECT COUNT(*) AS n FROM offers").fetchone()["n"] == before
+    assert shop.execute(
+        "SELECT status FROM offers WHERE id = ?",
+        (winback,),
+    ).fetchone()["status"] == "accepted"
+
+    picture = handle_reply(
+        shop,
+        log,
+        _CapRiceModel(),
+        1,
+        "Make I see the picture. picture.",
+        max_tokens=1000,
+        from_voice=True,
+    )
+    assert picture.image_offer_id == winback
+    assert _product(shop, picture.image_offer_id) == "Mama Gold Rice 50kg"
+    assert naira(76014) in picture.message
+    assert "Cap Rice" not in picture.message
+    assert "40,788" not in picture.message
+
+
 def test_when_she_has_not_bought_rice_the_shop_best_seller_wins(shop):
     """No personal rice history: the shelf's best seller, not A-before-M."""
     shop.execute(

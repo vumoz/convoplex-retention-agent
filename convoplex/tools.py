@@ -334,9 +334,10 @@ _RICE_NOISE = frozenset(
         "photos", "foto", "fotos", "flier", "flyer", "fliers", "flyers", "wetin",
         "how", "much", "now", "last", "price", "about", "what", "be", "is", "it",
         "this", "that", "bag", "bags", "one", "dey", "hold", "keep", "any", "just",
-        "still", "again", "your", "our", "shop", "my", "customer", "costoma",
-        "kustoma", "customa", "kostomer", "oga", "madam", "pls", "do", "have",
-        "can", "we", "with", "from", "when", "them", "abeg",
+        "still", "again", "your", "our", "shop", "my", "customer", "custom",
+        "costoma", "kustoma", "customa", "kostomer", "oga", "madam", "pls",
+        "do", "have", "can", "we", "with", "from", "when", "them", "abeg",
+        "so", "but", "na", "price", "abi",
     }
 )
 _SIZE = re.compile(r"^\d+(?:kg|g|l|ml|mg)?$")
