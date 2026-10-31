@@ -11,6 +11,7 @@ import json
 import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 import httpx
 
@@ -56,6 +57,7 @@ from convoplex.languages import (
     take_language_hint,
 )
 from convoplex.llm import LLMError, LiveMuse, MockMuse
+from convoplex.messages import picture_on_the_way
 from convoplex.money import naira
 from convoplex.whatsapp_state import WhatsAppStore, store_path, window_open
 
@@ -702,7 +704,7 @@ def _process_one(
         if hint:
             outbound = f"{outbound.rstrip()}\n\n{hint}"
         if getattr(result, "image_offer_id", None):
-            _send_offer_image(
+            sent_image = _send_offer_image(
                 settings,
                 channel,
                 log,
@@ -715,6 +717,10 @@ def _process_one(
                 started=started,
                 turn=turn,
             )
+            if not sent_image:
+                note = picture_on_the_way(getattr(result, "language", None))
+                if note.lower() not in outbound.lower():
+                    outbound = f"{note} {outbound}".strip()
         if getattr(result, "confirm_offer_id", None) and _send_confirm_buttons(
             settings,
             channel,
@@ -753,8 +759,25 @@ def _process_one(
             _log_unsent(settings, log, message, turn, started)
 
 
+_BUNDLED_RICE = Path(__file__).resolve().parent / "assets" / "mama-gold-rice.webp"
+
+
+def _bundled_product_card(offer: dict) -> bytes | None:
+    """Shipped Mama Gold card. The current offer price is painted on locally, with no model call."""
+    name = str(offer.get("product_name") or "").lower()
+    if "rice" not in name and "mama gold" not in name:
+        return None
+    if not _BUNDLED_RICE.is_file():
+        return None
+    raw = _BUNDLED_RICE.read_bytes()
+    try:
+        return render_promo_card(offer, raw)
+    except Exception:
+        return raw
+
+
 def ensure_promo_bytes(settings: Settings, offer_id: int) -> bytes | None:
-    """Cached promo card, or a newly drawn one. A failed live draw still returns a card."""
+    """Cached card, then the shipped Mama Gold image, then a live draw."""
     conn = open_db(settings)
     try:
         cached = read_promo_bytes(conn, settings.output_dir, offer_id)
@@ -763,18 +786,19 @@ def ensure_promo_bytes(settings: Settings, offer_id: int) -> bytes | None:
         offer = load_offer_for_card(conn, offer_id)
         if offer is None:
             return None
-        image = None
-        try:
-            card = build_promo_image(
-                offer,
-                mode=settings.llm_mode,
-                api_key=settings.meta_api_key,
-                base_url=settings.meta_base_url,
-                model=settings.image_model,
-            )
-            image = card.image
-        except Exception:
-            image = None
+        image = _bundled_product_card(offer)
+        if image is None:
+            try:
+                card = build_promo_image(
+                    offer,
+                    mode=settings.llm_mode,
+                    api_key=settings.meta_api_key,
+                    base_url=settings.meta_base_url,
+                    model=settings.image_model,
+                )
+                image = card.image
+            except Exception:
+                image = None
         if not image:
             try:
                 image = render_promo_card(offer, None)
@@ -784,6 +808,21 @@ def ensure_promo_bytes(settings: Settings, offer_id: int) -> bytes | None:
         return image
     finally:
         conn.close()
+
+
+def _log_image(settings, log, *, customer_id: int, offer_id: int, ok: bool, attempt: int, error: str | None) -> None:
+    payload = {
+        "customer_id": customer_id,
+        "offer_id": offer_id,
+        "ok": ok,
+        "attempt": attempt,
+    }
+    if error:
+        payload["error"] = error[:120]
+    try:
+        safe_append(log, settings, kind="whatsapp_image", actor="whatsapp", payload=payload)
+    except Exception:
+        return
 
 
 def _send_offer_image(
@@ -799,33 +838,55 @@ def _send_offer_image(
     language: str | None,
     started: float | None,
     turn: dict | None,
-) -> None:
-    """Send the promo card. A failure stays silent so the reply never says it cannot."""
+) -> bool:
+    """Send the promo card. One retry, then the caller says the picture is coming."""
     if channel != "whatsapp":
-        return
+        _log_image(
+            settings, log, customer_id=customer_id, offer_id=offer_id, ok=False, attempt=0, error="channel"
+        )
+        return False
     image = ensure_promo_bytes(settings, offer_id)
     if not image:
-        return
-    try:
-        deliver(
-            settings,
-            channel,
-            log,
-            store,
-            http,
-            customer_id=customer_id,
-            message_seq=None,
-            kind="image",
-            text=caption,
-            image=image,
-            caption=caption,
-            session_open=True,
-            language=language,
-            started=started,
-            turn=turn,
+        _log_image(
+            settings, log, customer_id=customer_id, offer_id=offer_id, ok=False, attempt=0, error="no_image"
         )
-    except (SendBlocked, WhatsAppError):
-        return
+        return False
+    last_error = "send_failed"
+    for attempt in (1, 2):
+        try:
+            deliver(
+                settings,
+                channel,
+                log,
+                store,
+                http,
+                customer_id=customer_id,
+                message_seq=None,
+                kind="image",
+                text=caption,
+                image=image,
+                caption=caption,
+                session_open=True,
+                language=language,
+                started=started,
+                turn=turn,
+            )
+            _log_image(
+                settings, log, customer_id=customer_id, offer_id=offer_id, ok=True, attempt=attempt, error=None
+            )
+            return True
+        except (SendBlocked, WhatsAppError) as exc:
+            last_error = type(exc).__name__
+            _log_image(
+                settings,
+                log,
+                customer_id=customer_id,
+                offer_id=offer_id,
+                ok=False,
+                attempt=attempt,
+                error=last_error,
+            )
+    return False
 
 
 def _send_confirm_buttons(

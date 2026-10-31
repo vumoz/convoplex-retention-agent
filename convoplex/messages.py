@@ -517,7 +517,7 @@ def confirm_hold_message(ctx: dict, product_name: str | None, price_ngn: int | N
 
 
 _IMAGE_ASK = re.compile(
-    r"\b(?:pictures?|pics?|images?|photos?|fotos?|fliers?|flyers?)\b"
+    r"\b(?:pictures?|pics?|pix|images?|photos?|fotos?|fliers?|flyers?)\b"
     r"|make i see|show me|wetin e look like|wetin e be like|let me see"
     r"|gosi m|fi han|nuna mini|onyinyo|aworan|fọto|\bhoto\b",
     re.IGNORECASE,
@@ -543,6 +543,20 @@ def image_offer_message(ctx: dict, product_name: str, price_ngn: int) -> str:
     if code == "ha":
         return f"Duba {product}. Shi ne {price} yanzu. In ajiye ɗaya maka ka?"
     return f"Here is {product}, at {price}. Shall I set one aside for you?"
+
+
+def picture_on_the_way(language: str | None) -> str:
+    """Said only when the image send failed after one retry. The caption still follows."""
+    code = str(language or "en")
+    if code == "pcm":
+        return "Picture dey come."
+    if code == "ig":
+        return "Foto na-abịa."
+    if code == "yo":
+        return "Àwòrán ń bọ̀."
+    if code == "ha":
+        return "Hoton yana zuwa."
+    return "The picture is coming."
 
 
 def substitute_message(ctx: dict, missing: str, product_name: str, price_ngn: int) -> str:
