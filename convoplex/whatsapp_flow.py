@@ -21,8 +21,10 @@ from convoplex.config import Settings
 from convoplex.context import get_customer
 from convoplex.db import open_db
 from convoplex.integrations.images import (
+    MUSE_REPLY_TIMEOUT_SECONDS,
     build_promo_image,
     load_offer_for_card,
+    promo_card_key,
     promo_filename,
     read_promo_bytes,
     remember_promo,
@@ -461,7 +463,11 @@ def send_promo(
         if offer is None:
             raise LookupError(f"Unknown offer {offer_id}")
         row = conn.execute("SELECT customer_id FROM offers WHERE id = ?", (offer_id,)).fetchone()
-        image = read_promo_bytes(conn, settings.output_dir, offer_id)
+        image = (
+            read_promo_bytes(conn, settings.output_dir, offer_id, promo_card_key(offer))
+            if offer
+            else None
+        )
     finally:
         conn.close()
     customer_id = int(row["customer_id"]) if row and row["customer_id"] is not None else None
@@ -762,61 +768,89 @@ def _process_one(
 _BUNDLED_RICE = Path(__file__).resolve().parent / "assets" / "mama-gold-rice.webp"
 
 
-def _bundled_product_card(offer: dict) -> bytes | None:
-    """Shipped Mama Gold card. The current offer price is painted on locally, with no model call."""
+def _bundled_rice_photo(offer: dict) -> bytes | None:
+    """Text-free Mama Gold photo shipped with the app. Overlay is painted separately, once."""
     name = str(offer.get("product_name") or "").lower()
     if "rice" not in name and "mama gold" not in name:
         return None
     if not _BUNDLED_RICE.is_file():
         return None
     raw = _BUNDLED_RICE.read_bytes()
-    try:
-        return render_promo_card(offer, raw)
-    except Exception:
-        return raw
+    return raw or None
 
 
-def ensure_promo_bytes(settings: Settings, offer_id: int) -> bytes | None:
-    """Cached card, then the shipped Mama Gold image, then a live draw."""
+def ensure_promo_bytes(settings: Settings, offer_id: int) -> tuple[bytes | None, str | None]:
+    """Card for this offer only.
+
+    Order: a cached card whose key matches this customer, shop, product, offer,
+    and price; otherwise a live muse-image-1.0 photo with the overlay painted
+    once; otherwise the shipped text-free Mama Gold photo with that same
+    overlay; the empty placeholder is last.
+    """
     conn = open_db(settings)
     try:
-        cached = read_promo_bytes(conn, settings.output_dir, offer_id)
-        if cached:
-            return cached
         offer = load_offer_for_card(conn, offer_id)
         if offer is None:
-            return None
-        image = _bundled_product_card(offer)
-        if image is None:
+            return None, None
+        key = promo_card_key(offer)
+        cached = read_promo_bytes(conn, settings.output_dir, offer_id, key)
+        if cached:
+            return cached, "cache"
+        image = None
+        source = None
+        if settings.llm_mode == "live":
             try:
                 card = build_promo_image(
                     offer,
-                    mode=settings.llm_mode,
+                    mode="live",
                     api_key=settings.meta_api_key,
                     base_url=settings.meta_base_url,
                     model=settings.image_model,
+                    timeout=MUSE_REPLY_TIMEOUT_SECONDS,
                 )
                 image = card.image
+                source = "muse"
             except Exception:
                 image = None
-        if not image:
+        if image is None:
+            photo = _bundled_rice_photo(offer)
+            if photo:
+                try:
+                    image = render_promo_card(offer, photo)
+                    source = "bundled"
+                except Exception:
+                    image = None
+        if image is None:
             try:
                 image = render_promo_card(offer, None)
+                source = "placeholder"
             except Exception:
-                return None
-        remember_promo(conn, image, settings.output_dir, offer_id)
-        return image
+                return None, None
+        remember_promo(conn, image, settings.output_dir, offer_id, card_key=key)
+        return image, source
     finally:
         conn.close()
 
 
-def _log_image(settings, log, *, customer_id: int, offer_id: int, ok: bool, attempt: int, error: str | None) -> None:
+def _log_image(
+    settings,
+    log,
+    *,
+    customer_id: int,
+    offer_id: int,
+    ok: bool,
+    attempt: int,
+    error: str | None,
+    source: str | None = None,
+) -> None:
     payload = {
         "customer_id": customer_id,
         "offer_id": offer_id,
         "ok": ok,
         "attempt": attempt,
     }
+    if source:
+        payload["source"] = source
     if error:
         payload["error"] = error[:120]
     try:
@@ -845,7 +879,7 @@ def _send_offer_image(
             settings, log, customer_id=customer_id, offer_id=offer_id, ok=False, attempt=0, error="channel"
         )
         return False
-    image = ensure_promo_bytes(settings, offer_id)
+    image, source = ensure_promo_bytes(settings, offer_id)
     if not image:
         _log_image(
             settings, log, customer_id=customer_id, offer_id=offer_id, ok=False, attempt=0, error="no_image"
@@ -872,7 +906,14 @@ def _send_offer_image(
                 turn=turn,
             )
             _log_image(
-                settings, log, customer_id=customer_id, offer_id=offer_id, ok=True, attempt=attempt, error=None
+                settings,
+                log,
+                customer_id=customer_id,
+                offer_id=offer_id,
+                ok=True,
+                attempt=attempt,
+                error=None,
+                source=source,
             )
             return True
         except (SendBlocked, WhatsAppError) as exc:
@@ -885,6 +926,7 @@ def _send_offer_image(
                 ok=False,
                 attempt=attempt,
                 error=last_error,
+                source=source,
             )
     return False
 
@@ -1278,7 +1320,8 @@ def _send_promo_card(
             raise WhatsAppError("There is no offer to put on a promo card.")
         offer_id = int(row["id"])
         offer = load_offer_for_card(conn, offer_id)
-        existing = read_promo_bytes(conn, settings.output_dir, offer_id) if offer else None
+        key = promo_card_key(offer) if offer else None
+        existing = read_promo_bytes(conn, settings.output_dir, offer_id, key) if key else None
         saved = None
         card = None
         if offer is not None and not existing:
@@ -1289,7 +1332,7 @@ def _send_promo_card(
                 base_url=settings.meta_base_url,
                 model=settings.image_model,
             )
-            saved = remember_promo(conn, card.image, settings.output_dir, offer_id)
+            saved = remember_promo(conn, card.image, settings.output_dir, offer_id, card_key=key)
     finally:
         conn.close()
     if offer is None:

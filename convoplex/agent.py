@@ -17,6 +17,7 @@ from convoplex.greeting import (
     greeting_reply,
     has_market_address,
     is_salutation_phrase,
+    picture_query,
     present_offer,
     reply_is_only_address,
 )
@@ -408,7 +409,7 @@ def _run(
     if decision == "picture":
         intent = "question"
         order = None
-        held = present_offer(conn, profile, user_text or "") or {}
+        held = present_offer(conn, profile, picture_query(user_text or "")) or {}
         if not held.get("offer_id"):
             held = present_offer(conn, profile, "rice") or {}
         if held:

@@ -125,7 +125,8 @@ CREATE TABLE IF NOT EXISTS usage_counters (
 CREATE TABLE IF NOT EXISTS promo_cards (
     offer_id INTEGER PRIMARY KEY,
     image BLOB NOT NULL,
-    media_type TEXT NOT NULL
+    media_type TEXT NOT NULL,
+    card_key TEXT
 );
 
 CREATE TABLE IF NOT EXISTS app_kv (
@@ -286,7 +287,8 @@ CREATE TABLE IF NOT EXISTS usage_counters (
 CREATE TABLE IF NOT EXISTS promo_cards (
     offer_id INTEGER PRIMARY KEY,
     image BLOB NOT NULL,
-    media_type TEXT NOT NULL
+    media_type TEXT NOT NULL,
+    card_key TEXT
 );
 
 CREATE TABLE IF NOT EXISTS app_kv (
@@ -297,6 +299,7 @@ CREATE TABLE IF NOT EXISTS app_kv (
 
 
 _LANGUAGE_READY: set[str] = set()
+_PROMO_READY: set[str] = set()
 
 
 def ensure_customer_language(conn, *, postgres: bool, key: str) -> None:
@@ -436,6 +439,26 @@ def _backfill_language_opt_in(conn) -> None:
     )
 
 
+def ensure_promo_card_key(conn, *, postgres: bool, key: str) -> None:
+    """Add card_key so a pre-deploy promo blob is not treated as current.
+
+    CREATE TABLE IF NOT EXISTS does not add columns on a database that already
+    has promo_cards. Old rows keep a null key and are ignored by the reader.
+    """
+    if key in _PROMO_READY:
+        return
+    if postgres:
+        conn.execute("ALTER TABLE promo_cards ADD COLUMN IF NOT EXISTS card_key TEXT")
+    else:
+        columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(promo_cards)").fetchall()}
+        if not columns:
+            return
+        if "card_key" not in columns:
+            conn.execute("ALTER TABLE promo_cards ADD COLUMN card_key TEXT")
+    conn.commit()
+    _PROMO_READY.add(key)
+
+
 def open_db(settings):
     """SQLite file for local and tests. Postgres when DATABASE_URL is set.
 
@@ -447,6 +470,7 @@ def open_db(settings):
 
         conn = connect_postgres(settings.database_url, postgres_schema())
         ensure_customer_language(conn, postgres=True, key=settings.database_url)
+        ensure_promo_card_key(conn, postgres=True, key=settings.database_url)
         from convoplex.lexicon import ensure_lexicon
 
         ensure_lexicon(conn)
@@ -457,6 +481,7 @@ def open_db(settings):
     conn = connect(settings.db_path)
     conn.executescript(RUNTIME_TABLES)
     ensure_customer_language(conn, postgres=False, key=str(settings.db_path))
+    ensure_promo_card_key(conn, postgres=False, key=str(settings.db_path))
     from convoplex.lexicon import ensure_lexicon
 
     ensure_lexicon(conn)

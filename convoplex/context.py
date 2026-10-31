@@ -259,12 +259,19 @@ def get_customer(conn: sqlite3.Connection, customer_id: int, as_of: date | None 
 
 
 def open_offer(conn: sqlite3.Connection, customer_id: int) -> dict | None:
+    """Latest open offer for this customer at their own shop.
+
+    An offer row whose retailer does not match the customer is ignored, so
+    another shop's card cannot be picked up as this conversation's offer.
+    """
     row = conn.execute(
         """
-        SELECT o.id, o.product_id, o.discount_percent, o.list_price_ngn, o.offer_price_ngn,
-               o.status, o.language, p.name AS product_name, p.stock_qty, p.unit
+        SELECT o.id, o.product_id, o.retailer_id, o.customer_id, o.discount_percent,
+               o.list_price_ngn, o.offer_price_ngn, o.status, o.language,
+               p.name AS product_name, p.stock_qty, p.unit
         FROM offers o
-        JOIN products p ON p.id = o.product_id
+        JOIN products p ON p.id = o.product_id AND p.retailer_id = o.retailer_id
+        JOIN customers c ON c.id = o.customer_id AND c.retailer_id = o.retailer_id
         WHERE o.customer_id = ?
           AND o.status IN ('drafted', 'sent', 'declined')
           AND p.stock_qty > 0
@@ -279,6 +286,8 @@ def open_offer(conn: sqlite3.Connection, customer_id: int) -> dict | None:
         "offer_id": int(row["id"]),
         "product_id": int(row["product_id"]),
         "product_name": row["product_name"],
+        "retailer_id": int(row["retailer_id"]),
+        "customer_id": int(row["customer_id"]),
         "discount_percent": int(row["discount_percent"]),
         "list_price_ngn": int(row["list_price_ngn"]),
         "offer_price_ngn": int(row["offer_price_ngn"]),

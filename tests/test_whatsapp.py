@@ -18,6 +18,7 @@ from PIL import Image
 
 from convoplex.__main__ import main
 from convoplex.config import Settings
+from convoplex.integrations.images import load_offer_for_card, promo_card_key, remember_promo
 from convoplex.integrations.whatsapp import (
     SendBlocked,
     WhatsAppClient,
@@ -529,9 +530,14 @@ def test_promo_card_uploads_jpeg_inside_the_window_and_uses_the_template_outside
     assert missing.status_code == 409
     assert calls == []
 
-    folder = tmp_path / "output" / "promo"
-    folder.mkdir(parents=True, exist_ok=True)
-    (folder / f"offer-{offer_id}.webp").write_bytes(_tiny_webp())
+    offer = load_offer_for_card(shop, offer_id)
+    remember_promo(
+        shop,
+        _tiny_webp(),
+        tmp_path / "output",
+        offer_id,
+        card_key=promo_card_key(offer),
+    )
     closed = client.post(f"/v1/offers/{offer_id}/whatsapp")
     assert closed.status_code == 200
     assert closed.json()["sent"] == "template"
