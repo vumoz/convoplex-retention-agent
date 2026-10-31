@@ -196,18 +196,35 @@ _OVERLAY_CTA = {
 }
 
 
+def offer_has_discount(offer: dict) -> bool:
+    """True only when the offer price is actually below the shelf price."""
+    try:
+        discount = int(offer.get("discount_percent") or 0)
+        price = int(offer["offer_price_ngn"])
+        listed = int(offer["list_price_ngn"])
+    except (TypeError, ValueError, KeyError):
+        return False
+    return discount > 0 and price < listed
+
+
 def overlay_copy(offer: dict) -> dict:
-    """Exact strings painted onto the card. Prices and the product name stay as stored."""
+    """Exact strings painted onto the card. Prices and the product name stay as stored.
+
+    A shelf quote (no discount, or the same naira twice) does not get a badge
+    or a struck-through was-price.
+    """
     language = str(offer.get("language") or "en")
     if language not in _OVERLAY_OFF:
         language = "en"
+    deal = offer_has_discount(offer)
     return {
         "shop": offer["retailer_name"],
         "city": offer["city"],
         "product": offer["product_name"],
         "price": naira(offer["offer_price_ngn"]),
-        "was": naira(offer["list_price_ngn"]),
-        "off": f"{int(offer['discount_percent'])}% {_OVERLAY_OFF[language]}",
+        "was": naira(offer["list_price_ngn"]) if deal else "",
+        "off": f"{int(offer['discount_percent'])}% {_OVERLAY_OFF[language]}" if deal else "",
+        "deal": deal,
         "cta": _OVERLAY_CTA[language],
     }
 
@@ -341,26 +358,27 @@ def render_promo_card(offer: dict, background: bytes | None = None) -> bytes:
 
     product_lines = _fit(_wrap(draw, copy["product"], product_font, CARD - 200), 2)
     price = copy["price"]
-    badge = copy["off"]
-    was = f"was {copy['was']}"
+    deal = bool(copy.get("deal"))
+    badge = copy["off"] if deal else ""
+    was = f"was {copy['was']}" if deal else ""
     cta = copy["cta"]
     price_width = draw.textlength(price, font=price_font)
-    badge_width = draw.textlength(badge, font=badge_font)
-    badge_beside = 80 + price_width + 28 + badge_width + 36 <= CARD - 80
+    badge_width = draw.textlength(badge, font=badge_font) if badge else 0
+    badge_beside = bool(badge) and 80 + price_width + 28 + badge_width + 36 <= CARD - 80
     line_h = 48
     pad_top = 20
     pad_bottom = 20
     price_h = 74
-    was_h = 36
+    was_h = 36 if deal else 0
     cta_h = 38
-    extra_badge = 0 if badge_beside else 54
+    extra_badge = (0 if badge_beside else 54) if deal else 0
     panel_height = (
         pad_top
         + max(1, len(product_lines)) * line_h
         + 6
         + price_h
         + extra_badge
-        + 2
+        + (2 if deal else 0)
         + was_h
         + 10
         + cta_h
@@ -376,25 +394,28 @@ def render_promo_card(offer: dict, background: bytes | None = None) -> bytes:
         y += line_h
     y += 6
     draw.text((80, y), price, font=price_font, fill=gold)
-    if badge_beside:
-        badge_x = 80 + price_width + 28
-        badge_y = y + 16
+    if deal:
+        if badge_beside:
+            badge_x = 80 + price_width + 28
+            badge_y = y + 16
+        else:
+            badge_x = 80
+            badge_y = y + price_h
+        draw.rounded_rectangle(
+            (badge_x, badge_y, badge_x + badge_width + 36, badge_y + 44),
+            radius=22,
+            fill=(226, 176, 67, 255),
+        )
+        draw.text((badge_x + 18, badge_y + 7), badge, font=badge_font, fill=(28, 20, 8, 255))
+        y += price_h + extra_badge + 2
+        draw.text((80, y), was, font=was_font, fill=muted)
+        was_width = draw.textlength(was, font=was_font)
+        box = draw.textbbox((80, y), was, font=was_font)
+        mid = (box[1] + box[3]) / 2
+        draw.line((80, mid, 80 + was_width, mid), fill=muted, width=3)
+        y += was_h + 10
     else:
-        badge_x = 80
-        badge_y = y + price_h
-    draw.rounded_rectangle(
-        (badge_x, badge_y, badge_x + badge_width + 36, badge_y + 44),
-        radius=22,
-        fill=(226, 176, 67, 255),
-    )
-    draw.text((badge_x + 18, badge_y + 7), badge, font=badge_font, fill=(28, 20, 8, 255))
-    y += price_h + extra_badge + 2
-    draw.text((80, y), was, font=was_font, fill=muted)
-    was_width = draw.textlength(was, font=was_font)
-    box = draw.textbbox((80, y), was, font=was_font)
-    mid = (box[1] + box[3]) / 2
-    draw.line((80, mid, 80 + was_width, mid), fill=muted, width=3)
-    y += was_h + 10
+        y += price_h + 10
     draw.text((80, y), cta, font=cta_font, fill=gold)
 
     buffer = io.BytesIO()
@@ -523,6 +544,36 @@ def _blob_bytes(value) -> bytes | None:
     else:
         value = bytes(value)
     return value or None
+
+
+def sibling_product_image(conn, offer: dict) -> bytes | None:
+    """A saved card for this same shop and product, so a new price can be painted on it.
+
+    Rows with no card key are the old unversioned cards and are left alone.
+    """
+    retailer_id = offer.get("retailer_id")
+    product_id = offer.get("product_id")
+    if retailer_id is None or product_id is None or conn is None:
+        return None
+    rows = conn.execute(
+        """
+        SELECT pc.image
+        FROM promo_cards pc
+        JOIN offers o ON o.id = pc.offer_id
+        WHERE o.retailer_id = ?
+          AND o.product_id = ?
+          AND o.id != ?
+          AND pc.card_key IS NOT NULL
+          AND pc.card_key != ''
+        ORDER BY o.id DESC
+        """,
+        (int(retailer_id), int(product_id), int(offer.get("offer_id") or 0)),
+    ).fetchall()
+    for row in rows:
+        blob = _blob_bytes(row["image"])
+        if blob and len(blob) > 32:
+            return blob
+    return None
 
 
 def read_promo_bytes(conn, output_dir: Path | str, offer_id: int, card_key: str | None = None) -> bytes | None:

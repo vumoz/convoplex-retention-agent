@@ -317,6 +317,51 @@ def test_live_muse_is_preferred_and_a_timeout_uses_the_shipped_photo(shop, tmp_p
     assert missing_key == fallback
 
 
+def test_a_timeout_repaints_the_saved_photo_before_the_shipped_drawing(shop, tmp_path, monkeypatch):
+    """Offer 6's photo is reused for a later shelf quote of the same rice."""
+    kept = _mama_offer(shop)
+    fresh = create_offer(shop, customer_id=1, discount_percent=10, product_id=1)
+    assert fresh["ok"] is True
+    shop.execute(
+        """
+        UPDATE offers
+        SET discount_percent = 0, list_price_ngn = 84460, offer_price_ngn = 84460
+        WHERE id = ?
+        """,
+        (fresh["offer_id"],),
+    )
+    shop.commit()
+    photo = _solid_webp((24, 80, 140))
+    db = connect(Path(shop.execute("PRAGMA database_list").fetchone()["file"]))
+    try:
+        older = images.load_offer_for_card(db, kept)
+        images.remember_promo(db, photo, tmp_path / "output", kept, card_key=promo_card_key(older))
+    finally:
+        db.close()
+
+    def timed_out(prompt, *, api_key, base_url, model, client):
+        raise httpx.TimeoutException("muse image timed out")
+
+    calls, real = _spy_render(monkeypatch)
+    monkeypatch.setattr(images, "generate_image", timed_out)
+    image, source = whatsapp_flow.ensure_promo_bytes(
+        _settings(shop, tmp_path, llm_mode="live", meta_api_key="test-key"),
+        int(fresh["offer_id"]),
+    )
+    assert source == "reuse"
+    assert calls == [photo]
+    db = connect(Path(shop.execute("PRAGMA database_list").fetchone()["file"]))
+    try:
+        current = images.load_offer_for_card(db, int(fresh["offer_id"]))
+    finally:
+        db.close()
+    assert image == real(current, photo)
+    asset = whatsapp_flow._BUNDLED_RICE.read_bytes()
+    assert image != real(current, asset)
+    assert images.overlay_copy(current)["deal"] is False
+    assert images.overlay_copy(current)["off"] == ""
+
+
 def test_placeholder_is_last_when_muse_and_the_shipped_photo_are_unavailable(shop, tmp_path, monkeypatch):
     offer_id = _mama_offer(shop)
     calls, real = _spy_render(monkeypatch)

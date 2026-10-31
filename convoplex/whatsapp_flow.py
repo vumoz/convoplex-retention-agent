@@ -29,6 +29,7 @@ from convoplex.integrations.images import (
     read_promo_bytes,
     remember_promo,
     render_promo_card,
+    sibling_product_image,
 )
 from convoplex.integrations.voice import VoiceError, transcribe_audio
 from convoplex.integrations.whatsapp import (
@@ -782,10 +783,10 @@ def _bundled_rice_photo(offer: dict) -> bytes | None:
 def ensure_promo_bytes(settings: Settings, offer_id: int) -> tuple[bytes | None, str | None]:
     """Card for this offer only.
 
-    Order: a cached card whose key matches this customer, shop, product, offer,
-    and price; otherwise a live muse-image-1.0 photo with the overlay painted
-    once; otherwise the shipped text-free Mama Gold photo with that same
-    overlay; the empty placeholder is last.
+    Order: a cached card for this offer; otherwise a live muse-image-1.0 photo;
+    otherwise another saved photo of the same product at this shop, with the
+    overlay painted again for this price; otherwise the shipped Mama Gold
+    photo; the empty placeholder is last.
     """
     conn = open_db(settings)
     try:
@@ -812,6 +813,14 @@ def ensure_promo_bytes(settings: Settings, offer_id: int) -> tuple[bytes | None,
                 source = "muse"
             except Exception:
                 image = None
+        if image is None:
+            sibling = sibling_product_image(conn, offer)
+            if sibling:
+                try:
+                    image = render_promo_card(offer, sibling)
+                    source = "reuse"
+                except Exception:
+                    image = None
         if image is None:
             photo = _bundled_rice_photo(offer)
             if photo:

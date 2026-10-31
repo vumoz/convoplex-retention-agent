@@ -22,6 +22,33 @@ OFFER = {
 }
 
 
+def test_a_shelf_price_hides_the_badge_and_the_struck_was_price():
+    plain = {**OFFER, "discount_percent": 0, "offer_price_ngn": 84460, "list_price_ngn": 84460}
+    copy = overlay_copy(plain)
+    assert copy["price"] == naira(84460)
+    assert copy["off"] == ""
+    assert copy["was"] == ""
+    assert copy["deal"] is False
+    same = {**OFFER, "discount_percent": 10, "offer_price_ngn": 84460, "list_price_ngn": 84460}
+    assert overlay_copy(same)["deal"] is False
+    assert overlay_copy(same)["off"] == ""
+    discounted = render_promo_card(OFFER, None)
+    shelf = render_promo_card(plain, None)
+    assert shelf != discounted
+    assert _gold_badge_pixels(shelf) < _gold_badge_pixels(discounted)
+
+
+def _gold_badge_pixels(raw: bytes) -> int:
+    image = Image.open(io.BytesIO(raw)).convert("RGB")
+    count = 0
+    for y in range(820, 1040, 2):
+        for x in range(60, 1000, 4):
+            red, green, blue = image.getpixel((x, y))
+            if red > 200 and 140 < green < 210 and blue < 110:
+                count += 1
+    return count
+
+
 def test_overlay_uses_the_offer_numbers_and_the_prompt_forbids_text():
     copy = overlay_copy(OFFER)
     assert copy["shop"] == "Mama Nkechi Provisions"
