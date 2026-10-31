@@ -68,6 +68,18 @@ _ALIASES = {
     "pidgin": "pcm",
     "pidgin english": "pcm",
     "broken english language": "pcm",
+    "brooking": "pcm",
+    "brookin": "pcm",
+    "brooklyn": "pcm",
+    "brokin": "pcm",
+    "brokeen": "pcm",
+    "pigin": "pcm",
+    "pidgeon": "pcm",
+    "brooklyn english": "pcm",
+    "brooking english": "pcm",
+    "no broken": "pcm",
+    "no brooking": "pcm",
+    "no brooklyn": "pcm",
     "naija": "pcm",
     "igbo": "ig",
     "ibo": "ig",
@@ -125,6 +137,10 @@ _MISHEARD = {
     "house a": "ha",
     "housea": "ha",
     "how sa": "ha",
+    "howsa": "ha",
+    "housa": "ha",
+    "owsa": "ha",
+    "hausa": "ha",
     "yaruba": "yo",
     "yuroba": "yo",
     "your uba": "yo",
@@ -284,11 +300,33 @@ def requested_language(value: str | None) -> str | None:
     words = folded.split()
     if not words or len(words) > 16:
         return None
-    # "Pidgin English" and "Broken English" are Broken English, not English.
+    # "Pidgin English", "Brooklyn English", and "brooking" are Broken English, not English.
+    broken_tokens = {
+        "broken",
+        "brokin",
+        "brooking",
+        "brookin",
+        "brooklyn",
+        "brokeen",
+        "pidgin",
+        "pigin",
+        "pidgeon",
+    }
+    if any(f"{token} english" in folded for token in broken_tokens):
+        return "pcm"
     if "broken english" in folded or "pidgin english" in folded:
         return "pcm"
-    if "pidgin" in words and (
-        any(word in _SWITCH_CUES or word.startswith("talk") for word in words) or len(words) <= 4
+    if any(word.startswith("cawon") for word in words):
+        # "cawonbarry rice" is a garbled "make we talk for Hausa", not a rice order.
+        return "ha"
+    hausa_tokens = {"housa", "housea", "hausa", "ausa", "howsa", "owsa", "hausaa"}
+    if "house a" in folded or any(word in hausa_tokens for word in words):
+        if any(word in _SWITCH_CUES or word.startswith("talk") for word in words) or len(words) <= 3:
+            return "ha"
+    if any(word in broken_tokens for word in words) and (
+        any(word in _SWITCH_CUES or word.startswith("talk") for word in words)
+        or (len(words) <= 3 and "no" in words)
+        or len(words) <= 2
     ):
         return "pcm"
     if not any(word in _SWITCH_CUES or word.startswith("talk") for word in words):

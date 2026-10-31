@@ -233,7 +233,18 @@ def _run(
     elif task == "reply" and has_market_address(user_text) and decision != "decline":
         # "My customer, I wan buy rice" opens the sale. It is not a yes and not a brand.
         decision = "greet"
-    elif pivot and decision != "decline":
+    elif (
+        task == "reply"
+        and from_voice
+        and decision is None
+        and not asked_language
+        and named_product is None
+        and not generic_rice
+        and _unclear_voice(user_text or "")
+    ):
+        # A garbled voice note that names no product is not an order at the shelf price.
+        decision = "repeat"
+    elif pivot and decision != "decline" and not asked_language:
         decision = "pivot"
     if (
         task == "reply"
@@ -509,6 +520,21 @@ def _run(
         if held.get("offer_id") is not None:
             confirm_offer_id = int(held["offer_id"])
             pending_greet_offer = held
+    elif decision == "repeat":
+        intent = "question"
+        order = None
+        held = profile.get("open_offer") or {}
+        if held.get("product_name") and held.get("offer_price_ngn") is not None:
+            text = question_message(
+                profile,
+                held.get("product_name"),
+                int(held["offer_price_ngn"]),
+                held.get("stock_qty"),
+            )
+        elif str(profile.get("language") or "pcm") == "pcm":
+            text = "You wan make we talk Hausa?"
+        else:
+            text = "Do you want us to speak Hausa?"
     elif decision == "pivot" and pivot:
         intent = "question"
         order = None
@@ -765,6 +791,9 @@ def _reply_decision(user_text: str | None, profile: dict, from_voice: bool) -> s
         return "decline"
     if choice == "yes":
         return "accept" if offer_id else None
+    # "No broken" and "talk to me for brooking" are a language request, not a no.
+    if explicit_language(user_text):
+        return None
     if explicit_refusal(user_text):
         return "decline"
     language = profile.get("language")
@@ -793,6 +822,34 @@ def _button_choice(text: str | None) -> str | None:
     if folded == CONFIRM_YES_ID or folded in confirm_yes_titles():
         return "yes"
     return None
+
+
+_VOICE_CLEAR = frozenset(
+    {
+        "delivery",
+        "deliver",
+        "tomorrow",
+        "picture",
+        "pictures",
+        "photo",
+        "whatsapp",
+        "morning",
+        "evening",
+        "customer",
+        "please",
+        "broken",
+        "english",
+        "hausa",
+        "yoruba",
+        "igbo",
+    }
+)
+
+
+def _unclear_voice(text: str) -> bool:
+    """A long token that is not a product and not an ordinary word."""
+    words = re.findall(r"[a-z0-9]+", (text or "").lower())
+    return any(len(word) >= 8 and word not in _VOICE_CLEAR for word in words)
 
 
 def _wont_buy(text: str | None) -> bool:
@@ -871,7 +928,10 @@ def _commercial_for(conn, profile: dict, offer: dict | None, order: dict | None,
 
 def _ensure_offer_price(text: str, profile: dict) -> str:
     held = profile.get("open_offer") or {}
-    clause = offer_price_clause(profile, held.get("product_name"), held.get("offer_price_ngn"))
+    price = held.get("offer_price_ngn")
+    if price is not None and naira(int(price)) in (text or ""):
+        return text
+    clause = offer_price_clause(profile, held.get("product_name"), price)
     if clause and clause not in (text or ""):
         return f"{(text or '').rstrip()} {clause}".strip()
     return text
