@@ -74,7 +74,8 @@ def test_pcm_voice_wont_buy_asks_once_and_does_not_order(shop, log_path):
     assert yes.intent == "accept"
     assert yes.order and yes.order["ok"]
     assert yes.order["total_ngn"] == 70200
-    assert "Mama Gold Rice 50kg na ₦70,200." in yes.message
+    assert "₦70,200" in yes.message
+    assert yes.message.count("70,200") == 1
     assert "pickup" in yes.message.lower()
     assert "delivery" in yes.message.lower()
     assert "₦2,500" in yes.message

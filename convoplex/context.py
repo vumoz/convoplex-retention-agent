@@ -463,16 +463,8 @@ def agent_context(
         "currency": "NGN",
     }
     if task == "reply":
-        held = open_offer(conn, customer_id)
-        if held is not None and held.get("status") != "declined":
-            priced = discounted_offer_for_product(
-                conn,
-                customer_id,
-                int(held["product_id"]),
-                int(held["retailer_id"]),
-            )
-            if priced is not None:
-                held = priced
+        # A live discounted win-back beats a later 0% row, including a declined shelf copy.
+        held = conversation_offer(conn, customer_id) or open_offer(conn, customer_id)
         context["open_offer"] = held
         context["prior_tool_results"] = prior_tool_results or {}
         context["thread"] = (
