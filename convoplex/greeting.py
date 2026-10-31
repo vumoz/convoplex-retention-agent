@@ -248,7 +248,7 @@ def present_offer(conn, profile: dict, text: str) -> dict | None:
     A named brand replaces whatever was offered before. A plain rice request
     uses this customer's win-back rice, which is Mama Gold for the demo shop.
     """
-    from convoplex.context import open_offer
+    from convoplex.context import conversation_offer
     from convoplex.tools import (
         create_offer,
         find_products,
@@ -259,7 +259,7 @@ def present_offer(conn, profile: dict, text: str) -> dict | None:
 
     customer_id = int(profile.get("id") or profile["customer_id"])
     retailer_id = int(profile["retailer_id"])
-    held = open_offer(conn, customer_id)
+    held = conversation_offer(conn, customer_id)
     if held and (
         int(held.get("customer_id") or 0) != customer_id
         or int(held.get("retailer_id") or 0) != retailer_id
@@ -304,31 +304,25 @@ def _held_from_created(created: dict, customer_id: int) -> dict:
 def _ensure_offer(conn, profile: dict, held: dict | None, product) -> dict | None:
     """Price this product from its own offer, or from the shelf.
 
-    A Cap Rice discount is not applied to Mama Gold. A declined offer for the
-    same product still carries that product's price, on a fresh row Yes can use.
+    A Cap Rice discount is not applied to Mama Gold. A declined offer is not
+    copied into a new row. A drafted or sent offer for this same bag is reused,
+    including its discount; an accepted one is reused when that is all we have.
     """
     product_id = int(product["id"])
     customer_id = int(profile.get("id") or profile["customer_id"])
     retailer_id = int(profile["retailer_id"])
+    active = _offer_for_product(conn, customer_id, retailer_id, product_id, ("drafted", "sent"))
+    if active is not None:
+        return active
     if (
         held
         and int(held.get("product_id") or 0) == product_id
-        and held.get("status") != "declined"
+        and held.get("status") in {"drafted", "sent", "accepted"}
     ):
         return held
-    live = _offer_for_product(conn, customer_id, retailer_id, product_id, live_only=True)
-    if live is not None:
-        return live
-    previous = _offer_for_product(conn, customer_id, retailer_id, product_id, live_only=False)
-    if previous is not None:
-        return _insert_quote(
-            conn,
-            profile,
-            product,
-            list_price=int(previous["list_price_ngn"]),
-            offer_price=int(previous["offer_price_ngn"]),
-            discount=int(previous["discount_percent"]),
-        )
+    reserved = _offer_for_product(conn, customer_id, retailer_id, product_id, ("accepted",))
+    if reserved is not None:
+        return reserved
     shelf = int(product["price_ngn"])
     return _insert_quote(
         conn,
@@ -340,8 +334,7 @@ def _ensure_offer(conn, profile: dict, held: dict | None, product) -> dict | Non
     )
 
 
-def _offer_for_product(conn, customer_id: int, retailer_id: int, product_id: int, *, live_only: bool):
-    statuses = ("drafted", "sent") if live_only else ("drafted", "sent", "declined")
+def _offer_for_product(conn, customer_id: int, retailer_id: int, product_id: int, statuses: tuple[str, ...]):
     placeholders = ", ".join("?" for _ in statuses)
     row = conn.execute(
         f"""

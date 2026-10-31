@@ -259,13 +259,23 @@ def get_customer(conn: sqlite3.Connection, customer_id: int, as_of: date | None 
 
 
 def open_offer(conn: sqlite3.Connection, customer_id: int) -> dict | None:
-    """Latest open offer for this customer at their own shop.
+    """Latest drafted, sent, or declined offer. A yes after No can still use it."""
+    return _latest_offer(conn, customer_id, ("drafted", "sent", "declined"))
 
-    An offer row whose retailer does not match the customer is ignored, so
-    another shop's card cannot be picked up as this conversation's offer.
+
+def conversation_offer(conn: sqlite3.Connection, customer_id: int) -> dict | None:
+    """The bag this conversation is on. Declined offers are not brought back.
+
+    Drafted and sent win-backs count, and so does the offer just accepted.
     """
+    return _latest_offer(conn, customer_id, ("drafted", "sent", "accepted"))
+
+
+def _latest_offer(conn: sqlite3.Connection, customer_id: int, statuses: tuple[str, ...]) -> dict | None:
+    """Latest offer for this customer at their own shop."""
+    placeholders = ", ".join("?" for _ in statuses)
     row = conn.execute(
-        """
+        f"""
         SELECT o.id, o.product_id, o.retailer_id, o.customer_id, o.discount_percent,
                o.list_price_ngn, o.offer_price_ngn, o.status, o.language,
                p.name AS product_name, p.stock_qty, p.unit
@@ -273,12 +283,12 @@ def open_offer(conn: sqlite3.Connection, customer_id: int) -> dict | None:
         JOIN products p ON p.id = o.product_id AND p.retailer_id = o.retailer_id
         JOIN customers c ON c.id = o.customer_id AND c.retailer_id = o.retailer_id
         WHERE o.customer_id = ?
-          AND o.status IN ('drafted', 'sent', 'declined')
+          AND o.status IN ({placeholders})
           AND p.stock_qty > 0
         ORDER BY o.id DESC
         LIMIT 1
         """,
-        (customer_id,),
+        (customer_id, *statuses),
     ).fetchone()
     if row is None:
         return None

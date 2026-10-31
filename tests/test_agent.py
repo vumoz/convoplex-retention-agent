@@ -78,8 +78,9 @@ def test_english_winback_decline_and_question(shop, log_path):
     assert question.intent == "question"
     assert question.order is None
     assert question.tool_trace == []
-    assert "₦70,200" in question.message
-    assert "₦78,000" not in question.message
+    # The declined win-back is not brought back. Rice is quoted at the shelf price.
+    assert "₦78,000" in question.message
+    assert "₦70,200" not in question.message
     assert "hello" not in question.message.lower()
     stock_after = shop.execute("SELECT stock_qty FROM products WHERE id = 1").fetchone()["stock_qty"]
     assert stock_after == stock_before
