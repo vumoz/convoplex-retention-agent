@@ -12,6 +12,7 @@ from convoplex.commercial import commercial_payload, reconcile_text
 from convoplex.context import agent_context
 from convoplex.execution import ExecutionContext, audit_payload, scope_arguments
 from convoplex.greeting import (
+    customer_address,
     finish_presented_offer,
     greeting_reply,
     has_market_address,
@@ -194,12 +195,8 @@ def _run(
     asked_language = explicit_language(user_text) if task == "reply" else None
     pivot = unstocked_request(conn, user_text, profile) if task == "reply" else None
     decision = _reply_decision(user_text, profile, from_voice) if task == "reply" else None
-    if (
-        task == "reply"
-        and wants_product_image(user_text)
-        and profile.get("open_offer")
-        and decision not in ("decline", "accept")
-    ):
+    if task == "reply" and wants_product_image(user_text) and decision != "decline":
+        # A picture request wins over a greeting or a product pitch in the same sentence.
         decision = "picture"
     elif task == "reply" and has_market_address(user_text) and decision != "decline":
         # "My customer, I wan buy rice" opens the sale. It is not a yes and not a brand.
@@ -411,11 +408,23 @@ def _run(
     if decision == "picture":
         intent = "question"
         order = None
-        held = profile.get("open_offer") or {}
-        text = image_offer_message(profile, held.get("product_name"), int(held.get("offer_price_ngn") or 0))
+        held = present_offer(conn, profile, user_text or "") or {}
+        if not held.get("offer_id"):
+            held = present_offer(conn, profile, "rice") or {}
+        if held:
+            profile["open_offer"] = held
+        text = image_offer_message(
+            profile,
+            held.get("product_name"),
+            int(held.get("offer_price_ngn") or 0),
+        )
+        address = customer_address(user_text or "")
+        if address and address.lower() not in text.lower():
+            text = f"{address}, {text}"
         if held.get("offer_id") is not None:
             confirm_offer_id = int(held["offer_id"])
             image_offer_id = int(held["offer_id"])
+            pending_greet_offer = held
     elif decision == "confirm":
         intent = "question"
         order = None
