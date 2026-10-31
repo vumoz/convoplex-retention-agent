@@ -10,6 +10,70 @@ Read-only shop view: [https://convoplex-retention-agent.vercel.app/demo](https:/
 
 Source: [https://github.com/vumoz/convoplex-retention-agent](https://github.com/vumoz/convoplex-retention-agent)
 
+## Powered by Meta models
+
+Live text is Muse Spark (`muse-spark-1.3`), pictures are Muse Image (`muse-image-1.0`), and voice notes are Muse Voice Transcribe (`muse-voice-transcribe-1.0`). All three go through the Meta Model API (Application Programming Interface) at `https://api.meta.ai/v1`. The defaults live in `convoplex/config.py`. `META_API_KEY` is read from the environment and is never written to the database, the action log, or this repository. With the key unset, `MockMuse` in `convoplex/llm.py` returns the same tool-call shape so tests and a laptop demo stay offline. Some turns are answered by trusted code after the model has already done its part, or instead of a second model call: a picture can reuse a stored card, a greeting can quote the open offer, and a language-only switch does not wait on another completion. Those shortcuts are named below. They do not replace the models. They keep the models from inventing a price or a yes.
+
+```mermaid
+flowchart LR
+  inbound[WhatsApp message, text or voice]
+  asr[Muse Voice Transcribe, if voice]
+  spark[Muse Spark, understand and reply]
+  image[Muse Image, if a picture was asked]
+  reply[WhatsApp reply with Yes and No buttons]
+  inbound --> asr
+  inbound --> spark
+  asr --> spark
+  spark --> image
+  spark --> reply
+  image --> reply
+```
+
+### Text: Muse Spark
+
+`muse-spark-1.3` is the chat model. `LiveMuse` in `convoplex/llm.py` posts to `/v1/chat/completions`. WhatsApp replies send `reasoning_effort` `minimal`, the shortest effort Muse Spark accepts (`none` is rejected). A message that only changes language stops after `set_language` and does not make a second completion (`convoplex/agent.py`).
+
+What the model writes, in the customer's language (formal English, Broken English (Nigerian Pidgin), Igbo, Yoruba, or Hausa):
+
+- The first win-back (`draft_winback` in `convoplex/agent.py`). The model calls `check_stock`, `get_price`, and `create_offer`. The discount has to sit between 5 and 15 percent. The offer price is computed in `convoplex/tools.py` from the database price. The model cannot pass a price in.
+- Every later reply. The same tool list adds `place_order`, `get_delivery_options`, `set_language`, `ask_phrase`, `learn_phrase`, and `send_offer_card`.
+- Purchase understanding. The model proposes accept, decline, or a question. Trusted code in `convoplex/agent.py` and `convoplex/purchase.py` keeps the states `offer_presented`, `clarification_required`, `confirmed`, `declined`, and `expired`. `place_order` writes nothing unless a confirmation matches that customer, product, quantity, and offer. A repeated "won't buy" is never consent. A clear Yes, including the WhatsApp button `buy_yes`, is what confirms.
+- A brand the shop does not stock (`convoplex/substitute.py`). Muse Spark is told the name is missing. The reply then names an in-stock alternative and the database price, and the Yes/No buttons stay on the offer. Spaghetti is not rewritten into rice.
+- Market greetings (`convoplex/greeting.py`). "My customer" and "Customer", including voice spellings such as costoma and kustoma, are an address, not a product. The shop mirrors the form the customer used, answers "how you dey" only when they greeted, and then continues the sale. The rest of the sentence still opens or reuses an offer. A reply that is only the address is replaced.
+- The lexicon (`convoplex/lexicon.py`). Seed words from `docs/broken-english-notes.md` go into the prompt as data (`glossary: phrase = meaning`), not as instructions. `ask_phrase` fires only when one unknown word blocks the sale, at most once per turn and twice per conversation. When the customer explains the word, `learn_phrase` stores it in the same turn and the sale continues. The customer never hears that a word was saved. Address terms such as "customer" are refused as lexicon entries.
+
+The guards around the model are the point. Muse Spark proposes the words and the tool calls. Stock, naira amounts, consent, and which customer the call may touch are checked in `convoplex/tools.py`, `convoplex/commercial.py`, `convoplex/purchase.py`, and `convoplex/execution.py` before anything is sent or written.
+
+### Image: Muse Image
+
+`muse-image-1.0` draws a text-free product photograph. `convoplex/integrations/images.py` posts to `/v1/images/generations`. The prompt (`promo_prompt`) names the shop and the product and tells the model not to paint letters, digits, or prices.
+
+Pillow then prints the shop, the product, the offer price, the list price, and the discount in `render_promo_card` / `overlay_copy`, using DejaVu Sans bundled in the repo so ₦ and tone-marked Igbo, Yoruba, and Hausa letters render on Vercel. The figures come from the offer row, not from the picture model.
+
+When a customer asks to see the product (`wants_product_image` in `convoplex/messages.py`, or the `send_offer_card` tool), that request is decided before a greeting or a text-only product pitch (`convoplex/agent.py`). `ensure_promo_bytes` in `convoplex/whatsapp_flow.py` sends the cached card for that offer if one is already stored, otherwise the Mama Gold card shipped at `convoplex/assets/mama-gold-rice.webp` with the current database price painted on locally, and only then tries a live Muse Image draw. The caption repeats the product, the database price, and the hold question. Yes and No buttons still go out. If the upload fails, it is retried once, a `whatsapp_image` line is written to the action log, and the text says the picture is coming.
+
+### Voice: Muse Voice Transcribe
+
+`muse-voice-transcribe-1.0` is the ASR (Automatic Speech Recognition) model. `convoplex/integrations/voice.py` posts multipart audio to `/v1/asr/transcribe`. WhatsApp sends OGG. The file is converted to mono 16-bit WAV at 16 kHz or 24 kHz before the call. `_audio_reply` in `convoplex/whatsapp_flow.py` then runs the transcript through the same reply path as typed text.
+
+What that unlocks:
+
+- A voice note in Broken English (Nigerian Pidgin), Igbo, Yoruba, or Hausa is answered in that language.
+- An explicit language request wins, including mishearings. `explicit_language` in `convoplex/languages.py` maps "house a" and "ausa" to Hausa, "yaruba" to Yoruba, and "ibo" to Igbo, and saves the new language before the reply is written. If Muse Spark skips `set_language`, the reply is still forced into the language that was asked for.
+- "I wan buy" on a Broken English voice note is often transcribed as "I won't buy". That pair does not cancel the offer and does not count as a yes. The customer gets one clarify line with the product and the database price, and the Yes button. Only a clear yes after that places the order (`convoplex/llm.py`, `convoplex/agent.py`).
+
+### Where each model shows up
+
+| Model | Modality | Where in the code | What the customer sees |
+| --- | --- | --- | --- |
+| `muse-spark-1.3` | Text | `convoplex/llm.py`, `convoplex/agent.py`, `convoplex/prompts.py` | The win-back, the reply, the clarify line, the greeting, and the yes/no question, in their language |
+| `muse-image-1.0` | Image | `convoplex/integrations/images.py`, `convoplex/whatsapp_flow.py` | The promo card when they ask for a picture, with the database price printed on it |
+| `muse-voice-transcribe-1.0` | Voice | `convoplex/integrations/voice.py`, `convoplex/whatsapp_flow.py` | A voice note treated as a normal message: language switch, offer, or picture |
+
+## How this was built
+
+Victor Obioma Umozurike designed the product, made every product and language decision, and tested it in real WhatsApp conversations. An AI coding assistant wrote the code under his direction. The work in this repository was built during the hackathon, from 26 Oct 2026 onward. At runtime, Meta's models power every customer reply, every promo-card picture, and every voice note.
+
 ## Why Nigeria
 
 Retail in Lagos, Abuja, and Port Harcourt runs on WhatsApp. A provision shop, a fabric stall, or a phone seller does not have a retention team. When a regular stops buying, the next message is another job on top of the counter. The offer has to name a product that is actually on the shelf, a price in naira, and wording the customer already uses. English is the default. Many customers would rather continue in Broken English (Nigerian Pidgin), Igbo, Yoruba, or Hausa, including by voice note.
@@ -55,13 +119,7 @@ Scoring, in short: cadence is the median gap between orders, capped at 45 days. 
 
 ## Meta models
 
-| Model | How it is used |
-| --- | --- |
-| `muse-spark-1.3` | Drafts the win-back and the reply. `POST /v1/chat/completions` on `https://api.meta.ai/v1` with the shop tools: `check_stock`, `get_price`, `create_offer`, `place_order`, `get_delivery_options`, and `set_language`. WhatsApp replies send `reasoning_effort` `minimal` (the shortest effort Muse Spark accepts; `none` is rejected). A language-only switch sends the fixed confirmation after that tool call and does not make a second completion. |
-| `muse-voice-transcribe-1.0` | Transcribes a voice note. `POST /v1/asr/transcribe` takes mono 16-bit WAV. OGG from WhatsApp is converted first. The transcript then uses the same reply path, including a language switch. |
-| `muse-image-1.0` | Draws a text-free product photo. `POST /v1/images/generations`. Pillow prints the shop, the product, and the naira prices with bundled DejaVu Sans, so ₦ and the letters used for Igbo, Yoruba, and Hausa render on Vercel. |
-
-`META_API_KEY` is an environment variable. It is not written to the database, the action log, or this repo. With the key unset, a deterministic mock returns the same tool-call shape. Tests run in mock mode and do not call Meta.
+The models, the endpoints, and the guards around them are in [Powered by Meta models](#powered-by-meta-models) above. `META_API_KEY` stays an environment variable. Tests run in mock mode and do not call Meta.
 
 ## Languages
 
