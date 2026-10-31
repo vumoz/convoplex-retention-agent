@@ -66,6 +66,8 @@ _ALIASES = {
     "broken": "pcm",
     "broken english": "pcm",
     "pidgin": "pcm",
+    "pidgin english": "pcm",
+    "broken english language": "pcm",
     "naija": "pcm",
     "igbo": "ig",
     "ibo": "ig",
@@ -131,7 +133,22 @@ _MISHEARD = {
 }
 
 _SWITCH_CUES = frozenset(
-    {"speak", "switch", "change", "talk", "use", "want", "language", "lang", "asusu", "ede", "yare"}
+    {
+        "speak",
+        "speaking",
+        "speaks",
+        "switch",
+        "change",
+        "talk",
+        "talking",
+        "use",
+        "want",
+        "language",
+        "lang",
+        "asusu",
+        "ede",
+        "yare",
+    }
 )
 
 _PLEASE = re.compile(r"^(?:please |abeg |biko )+|(?: please| abeg| biko)+$")
@@ -262,10 +279,19 @@ def requested_language(value: str | None) -> str | None:
     if choice and choice["action"] == "set":
         return choice["language"]
     folded = _PLEASE.sub("", fold_language_text(value)).strip()
-    words = folded.split()
-    if not words or len(words) > 12:
+    if _REFUSAL.search(value or ""):
         return None
-    if not any(word in _SWITCH_CUES for word in words):
+    words = folded.split()
+    if not words or len(words) > 16:
+        return None
+    # "Pidgin English" and "Broken English" are Broken English, not English.
+    if "broken english" in folded or "pidgin english" in folded:
+        return "pcm"
+    if "pidgin" in words and (
+        any(word in _SWITCH_CUES or word.startswith("talk") for word in words) or len(words) <= 4
+    ):
+        return "pcm"
+    if not any(word in _SWITCH_CUES or word.startswith("talk") for word in words):
         return None
     found = None
     for index in range(len(words) - 1):

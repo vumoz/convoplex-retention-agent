@@ -33,7 +33,7 @@ from convoplex.access import (
 from convoplex.actionlog import open_action_log
 from convoplex.agent import draft_winback, handle_reply
 from convoplex.config import Settings
-from convoplex.context import get_customer, list_at_risk
+from convoplex.context import get_customer, list_at_risk, retire_zero_discount_duplicates
 from convoplex.db import SYNTHETIC_LABEL, open_db, ping_db, scenario_as_of
 from convoplex.integrations.images import (
     build_promo_image,
@@ -445,6 +445,15 @@ def create_app(settings: Settings | None = None, *, generate_if_missing: bool = 
             "order": _latest_offer_order(conn, customer_id),
             "synthetic": True,
         }
+
+    @app.post("/v1/offers/retire-shelf-duplicates", dependencies=[Depends(admin_dep)])
+    def retire_shelf_duplicates(conn=Depends(get_conn)):
+        """Mark 0% copies declined when a discounted offer exists for the same bag.
+
+        Safe for customer 184's offer 9. Does not reseed and does not touch the win-back.
+        """
+        retired = retire_zero_discount_duplicates(conn)
+        return {"ok": True, "retired_offer_ids": retired, "synthetic": True}
 
     @app.post("/v1/customers/{customer_id}/winback", dependencies=[Depends(admin_dep), Depends(try_dep)])
     def winback(customer_id: int, request: Request, conn=Depends(get_conn)):

@@ -266,9 +266,120 @@ def open_offer(conn: sqlite3.Connection, customer_id: int) -> dict | None:
 def conversation_offer(conn: sqlite3.Connection, customer_id: int) -> dict | None:
     """The bag this conversation is on. Declined offers are not brought back.
 
-    Drafted and sent win-backs count, and so does the offer just accepted.
+    A later 0% row for the same product does not hide the discounted win-back.
     """
-    return _latest_offer(conn, customer_id, ("drafted", "sent", "accepted"))
+    latest = _latest_offer(conn, customer_id, ("drafted", "sent", "accepted"))
+    if latest is None:
+        return None
+    priced = discounted_offer_for_product(
+        conn,
+        customer_id,
+        int(latest["product_id"]),
+        int(latest["retailer_id"]),
+    )
+    return priced or latest
+
+
+def discounted_offer_for_product(conn, customer_id: int, product_id: int, retailer_id: int) -> dict | None:
+    """The live win-back for this bag: a real discount, not a 0% shelf quote."""
+    row = conn.execute(
+        """
+        SELECT o.id, o.product_id, o.retailer_id, o.customer_id, o.discount_percent,
+               o.list_price_ngn, o.offer_price_ngn, o.status, o.language,
+               p.name AS product_name, p.stock_qty, p.unit
+        FROM offers o
+        JOIN products p ON p.id = o.product_id AND p.retailer_id = o.retailer_id
+        WHERE o.customer_id = ?
+          AND o.retailer_id = ?
+          AND o.product_id = ?
+          AND o.status IN ('drafted', 'sent', 'accepted')
+          AND o.discount_percent > 0
+          AND o.offer_price_ngn < o.list_price_ngn
+          AND p.stock_qty > 0
+        ORDER BY CASE o.status WHEN 'sent' THEN 0 WHEN 'drafted' THEN 1 ELSE 2 END,
+                 o.id DESC
+        LIMIT 1
+        """,
+        (int(customer_id), int(retailer_id), int(product_id)),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "offer_id": int(row["id"]),
+        "product_id": int(row["product_id"]),
+        "product_name": row["product_name"],
+        "retailer_id": int(row["retailer_id"]),
+        "customer_id": int(row["customer_id"]),
+        "discount_percent": int(row["discount_percent"]),
+        "list_price_ngn": int(row["list_price_ngn"]),
+        "offer_price_ngn": int(row["offer_price_ngn"]),
+        "status": row["status"],
+        "language": row["language"],
+        "stock_qty": int(row["stock_qty"]),
+        "unit": row["unit"],
+        "reusable": True,
+    }
+
+
+def _has_offers_table(conn) -> bool:
+    try:
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'offers'"
+        ).fetchone()
+        return row is not None
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    try:
+        row = conn.execute(
+            "SELECT 1 AS ok FROM information_schema.tables WHERE table_name = 'offers'"
+        ).fetchone()
+        return row is not None
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False
+
+
+def retire_zero_discount_duplicates(conn) -> list[int]:
+    """Mark shelf-price copies declined when a real discount exists for that bag.
+
+    Offer 9 is the case: 0% Mama Gold while offer 6 is already 10% off.
+    """
+    if not _has_offers_table(conn):
+        return []
+    rows = conn.execute(
+        """
+        SELECT shelf.id
+        FROM offers shelf
+        WHERE shelf.status IN ('drafted', 'sent', 'accepted')
+          AND (shelf.discount_percent = 0 OR shelf.offer_price_ngn >= shelf.list_price_ngn)
+          AND EXISTS (
+            SELECT 1 FROM offers win
+            WHERE win.customer_id = shelf.customer_id
+              AND win.retailer_id = shelf.retailer_id
+              AND win.product_id = shelf.product_id
+              AND win.id != shelf.id
+              AND win.status IN ('drafted', 'sent', 'accepted')
+              AND win.discount_percent > 0
+              AND win.offer_price_ngn < win.list_price_ngn
+          )
+        """
+    ).fetchall()
+    ids = [int(row["id"]) for row in rows]
+    if not ids:
+        return []
+    for offer_id in ids:
+        conn.execute(
+            "UPDATE offers SET status = 'declined' WHERE id = ? AND status IN ('drafted', 'sent', 'accepted')",
+            (offer_id,),
+        )
+    conn.commit()
+    return ids
 
 
 def _latest_offer(conn: sqlite3.Connection, customer_id: int, statuses: tuple[str, ...]) -> dict | None:
@@ -352,7 +463,17 @@ def agent_context(
         "currency": "NGN",
     }
     if task == "reply":
-        context["open_offer"] = open_offer(conn, customer_id)
+        held = open_offer(conn, customer_id)
+        if held is not None and held.get("status") != "declined":
+            priced = discounted_offer_for_product(
+                conn,
+                customer_id,
+                int(held["product_id"]),
+                int(held["retailer_id"]),
+            )
+            if priced is not None:
+                held = priced
+        context["open_offer"] = held
         context["prior_tool_results"] = prior_tool_results or {}
         context["thread"] = (
             "Same thread as the win-back. Do not greet. Do not introduce the shop again. "
