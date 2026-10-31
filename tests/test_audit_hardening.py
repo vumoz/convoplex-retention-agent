@@ -86,10 +86,14 @@ def test_f01_repeated_refusal_and_unconfirmed_place_order_do_not_buy(shop, log_p
     assert _stock(shop) == stock
 
     draft_winback(shop, log, MockMuse(), 2, max_tokens=1000, language="en")
+    # "I won't buy rice" names the goods. Voice often hears "wan" as "won't",
+    # so this pitches the offer. It still must not place an order.
     for text, voice in (("I won't buy rice.", False), ("I won't buy rice.", True)):
         result = handle_reply(shop, log, _OrderStub(), 2, text, max_tokens=1000, from_voice=voice)
-        assert result.intent == "decline"
+        assert result.intent != "decline"
         assert result.order is None
+        assert result.confirm_offer_id
+        assert "₦70,200" in result.message
     assert _orders(shop) == before
     assert _stock(shop) == stock
 

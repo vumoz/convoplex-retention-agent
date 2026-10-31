@@ -58,7 +58,8 @@ def test_pcm_voice_wont_buy_asks_once_and_does_not_order(shop, log_path):
     assert first.order is None
     assert first.confirm_offer_id
     assert first.language == "pcm"
-    assert "Mama Gold Rice 50kg na ₦70,200." in first.message
+    assert "₦70,200" in first.message
+    assert "mama gold" in first.message.lower()
     assert "cancel" not in first.message.lower()
     assert _orders(shop) == before
     assert _stock(shop) == stock
@@ -90,14 +91,16 @@ def test_english_refusal_repeated_does_not_order(shop, log_path):
     first = handle_reply(
         shop, log, _DeclineModel(), 2, "I won't buy rice.", max_tokens=1000, from_voice=True
     )
-    assert first.intent == "decline"
+    assert first.intent != "decline"
     assert first.order is None
-    assert first.confirm_offer_id is None
+    assert first.confirm_offer_id
+    assert "₦70,200" in first.message
     second = handle_reply(
         shop, log, _DeclineModel(), 2, "I won't buy rice.", max_tokens=1000, from_voice=False
     )
-    assert second.intent == "decline"
+    assert second.intent != "decline"
     assert second.order is None
+    assert "₦70,200" in second.message
     assert _orders(shop) == before
     assert _stock(shop) == stock
 

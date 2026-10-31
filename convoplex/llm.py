@@ -72,7 +72,7 @@ class LLMError(RuntimeError):
 
 
 _EXPLICIT_NO = re.compile(
-    r"\b(?:i no want|i no go buy|abeg no|no thanks|no thank you|not now|not interested|cancel)\b"
+    r"\b(?:i no want|i don'?t want|i no go buy|abeg no|no thanks|no thank you|not now|not interested|cancel)\b"
     r"|(?<![a-z'])\bno\b(?!\s+wahala)",
     re.IGNORECASE,
 )

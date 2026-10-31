@@ -235,6 +235,15 @@ def _run(
         decision = "greet"
     elif (
         task == "reply"
+        and decision is None
+        and not asked_language
+        and _wont_or_wan_buy(user_text)
+        and _names_goods(user_text)
+    ):
+        # "I won't buy garri" still names goods. Do not leave it for the model to decline.
+        decision = "product"
+    elif (
+        task == "reply"
         and from_voice
         and decision is None
         and not asked_language
@@ -500,6 +509,7 @@ def _run(
         if reply_is_only_address(text):
             text = _full_sale_line(profile, held, user_text or "")
         if held.get("offer_id") is not None:
+            _remember_wont_pitch(conn, profile, held, user_text)
             confirm_offer_id = int(held["offer_id"])
             pending_greet_offer = held
     elif decision == "product":
@@ -518,6 +528,7 @@ def _run(
         if address and address.lower() not in text.lower():
             text = f"{address}, {text}"
         if held.get("offer_id") is not None:
+            _remember_wont_pitch(conn, profile, held, user_text)
             confirm_offer_id = int(held["offer_id"])
             pending_greet_offer = held
     elif decision == "repeat":
@@ -797,7 +808,14 @@ def _reply_decision(user_text: str | None, profile: dict, from_voice: bool) -> s
     if explicit_refusal(user_text):
         return "decline"
     language = profile.get("language")
-    # English "I won't buy rice" still closes. Broken English voice "won't" asks once.
+    # muse-voice hears Broken English "wan" (want) as "won't". A named category
+    # is a buy in every language, so the greeting or the offer pitch can run.
+    # PR #25 only clarified this on a Broken English voice thread. The later
+    # non-pcm line below then closed English and Yoruba before that pitch.
+    # A named brand on Broken English stays the one-time clarify ("you wan buy am").
+    if _wont_or_wan_buy(user_text) and _names_goods(user_text):
+        if not (language == "pcm" and not is_generic_rice(user_text)):
+            return None
     if language != "pcm" and purchase_is_ambiguous(user_text) and offer_id is not None:
         return "decline"
     if _pcm_voice_clarify(user_text, from_voice, language, offer) and _wont_buy(user_text):
@@ -850,6 +868,31 @@ def _unclear_voice(text: str) -> bool:
     """A long token that is not a product and not an ordinary word."""
     words = re.findall(r"[a-z0-9]+", (text or "").lower())
     return any(len(word) >= 8 and word not in _VOICE_CLEAR for word in words)
+
+
+def _wont_or_wan_buy(text: str | None) -> bool:
+    """won't / wont / wan / want next to buy. Voice writes wan as won't."""
+    folded = (text or "").replace("’", "'").replace("‘", "'")
+    return bool(
+        re.search(
+            r"\b(?:won'?t|wont|wan|wanna|want)\b(?:\s+\w+){0,6}\s+\b(?:buy|take|get)\b",
+            folded,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _names_goods(text: str | None) -> bool:
+    """A product or a category was named, so this is not a bare no."""
+    if is_generic_rice(text):
+        return True
+    return bool(re.search(r"\b(?:rice|garri|oil|milk|sugar|indomie|semo)\b", text or "", re.IGNORECASE))
+
+
+def _remember_wont_pitch(conn, profile: dict, held: dict, user_text: str | None) -> None:
+    """The first won't-buy pitch is the clarify. A later bare won't-buy does not ask again."""
+    if held.get("product_id") and _wont_buy(user_text):
+        note_clarification(conn, profile, held)
 
 
 def _wont_buy(text: str | None) -> bool:
