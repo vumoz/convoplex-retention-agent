@@ -471,6 +471,9 @@ def open_db(settings):
         conn = connect_postgres(settings.database_url, postgres_schema())
         ensure_customer_language(conn, postgres=True, key=settings.database_url)
         ensure_promo_card_key(conn, postgres=True, key=settings.database_url)
+        from convoplex.context import retire_zero_discount_duplicates
+
+        retire_zero_discount_duplicates(conn)
         from convoplex.lexicon import ensure_lexicon
 
         ensure_lexicon(conn)
@@ -482,6 +485,9 @@ def open_db(settings):
     conn.executescript(RUNTIME_TABLES)
     ensure_customer_language(conn, postgres=False, key=str(settings.db_path))
     ensure_promo_card_key(conn, postgres=False, key=str(settings.db_path))
+    from convoplex.context import retire_zero_discount_duplicates
+
+    retire_zero_discount_duplicates(conn)
     from convoplex.lexicon import ensure_lexicon
 
     ensure_lexicon(conn)

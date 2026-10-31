@@ -311,6 +311,11 @@ def _ensure_offer(conn, profile: dict, held: dict | None, product) -> dict | Non
     product_id = int(product["id"])
     customer_id = int(profile.get("id") or profile["customer_id"])
     retailer_id = int(profile["retailer_id"])
+    from convoplex.context import discounted_offer_for_product
+
+    priced = discounted_offer_for_product(conn, customer_id, product_id, retailer_id)
+    if priced is not None:
+        return priced
     active = _offer_for_product(conn, customer_id, retailer_id, product_id, ("drafted", "sent"))
     if active is not None:
         return active
