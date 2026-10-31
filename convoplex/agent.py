@@ -253,7 +253,7 @@ def _run(
     ):
         # A garbled voice note that names no product is not an order at the shelf price.
         decision = "repeat"
-    elif pivot and decision != "decline" and not asked_language:
+    elif pivot and decision not in {"decline", "accept"} and not asked_language:
         decision = "pivot"
     if (
         task == "reply"
@@ -562,7 +562,14 @@ def _run(
         text = winback_message(profile, offer)
     if task == "winback":
         text = one_seasonal_hook(text)
-    if task == "reply" and intent == "question" and profile.get("open_offer") and not clarify_question_text and not blocked_repeat_ask:
+    if (
+        task == "reply"
+        and intent == "question"
+        and decision != "accept"
+        and profile.get("open_offer")
+        and not clarify_question_text
+        and not blocked_repeat_ask
+    ):
         offer_price = int(profile["open_offer"]["offer_price_ngn"])
         if naira(offer_price) not in text:
             held = profile["open_offer"]
@@ -1053,6 +1060,15 @@ def _states_arrival(text: str) -> bool:
     return pickup and delivery
 
 
+def _wants_another_bag(text: str | None) -> bool:
+    """True when they asked for more than the bag already reserved."""
+    folded = (text or "").lower()
+    if re.search(r"\b(?:another|one more|add one|extra)\b", folded):
+        return True
+    numbers = [int(number) for number in re.findall(r"\d+", folded)]
+    return bool(numbers) and numbers[-1] > 1
+
+
 def _fallback_place(
     conn: sqlite3.Connection,
     log: ActionLog,
@@ -1068,6 +1084,7 @@ def _fallback_place(
         "product_id": offer["product_id"],
         "qty": requested_qty(user_text, profile, offer),
         "offer_id": offer["offer_id"],
+        "add_bag": _wants_another_bag(user_text),
     }
     trace.append("place_order")
     log.append(

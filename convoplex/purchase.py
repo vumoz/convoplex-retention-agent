@@ -63,7 +63,9 @@ def requested_qty(user_text: str | None, profile: dict, offer: dict) -> int:
     """The quantity the fallback will send to place_order. Confirmation uses the same number."""
     stock = int(offer.get("stock_qty") or 1)
     numbers = [int(number) for number in re.findall(r"\d+", user_text or "")]
-    requested = numbers[-1] if numbers else int(profile.get("suggested_qty") or 1)
+    # A bare yes is one bag. suggested_qty is a restock hint, not consent for 2 or 3.
+    requested = numbers[-1] if numbers else 1
+    del profile
     return max(1, min(requested, stock if stock > 0 else 1))
 
 

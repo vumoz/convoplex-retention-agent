@@ -81,6 +81,8 @@ _EXPLICIT_NO = re.compile(
 _WAN_BUY = re.compile(r"\bi wan buy(?: am)?\b", re.IGNORECASE)
 _EHEN_OYA = re.compile(r"\b(?:ehen|oya)\b", re.IGNORECASE)
 _WILL_TAKE = re.compile(r"\bi(?:'ll| will) take\b", re.IGNORECASE)
+_HOLD_OR_KEEP = re.compile(r"\b(?:hold am|keep am|abeg keep(?: one)?)\b", re.IGNORECASE)
+_ANOTHER_BAG = re.compile(r"\b(?:one more|add one|add another|another bag|extra bag)\b", re.IGNORECASE)
 
 
 def clear_affirmative(text: str | None) -> bool:
@@ -88,6 +90,8 @@ def clear_affirmative(text: str | None) -> bool:
     folded = (text or "").replace("’", "'").replace("‘", "'")
     lowered = folded.lower()
     if _WAN_BUY.search(folded) or _EHEN_OYA.search(folded) or _WILL_TAKE.search(folded):
+        return True
+    if _HOLD_OR_KEEP.search(folded) or _ANOTHER_BAG.search(folded):
         return True
     if any(_contains(lowered, phrase) for phrase in EXPLICIT_ACCEPT):
         return True
@@ -117,6 +121,8 @@ def classify_reply(text: str) -> str:
     lowered = text.lower().strip()
     if purchase_is_ambiguous(lowered):
         return "question"
+    if _HOLD_OR_KEEP.search(lowered) or _ANOTHER_BAG.search(lowered):
+        return "accept"
     if any(_contains(lowered, phrase) for phrase in EXPLICIT_ACCEPT):
         return "accept"
     if re.search(r"\bdeliver", lowered) and not re.search(

@@ -537,6 +537,51 @@ def create_offer(
     }
 
 
+def _same_price_reservation(conn, customer_id: int, product_id: int, offer_id: int, unit_price: int, product):
+    """The latest completed order for this offer at this price, or None.
+
+    A second yes confirms that reservation. A different price is not reused,
+    so a shelf-price order cannot answer a discounted yes.
+    """
+    row = conn.execute(
+        """
+        SELECT o.id, o.total_ngn, o.offer_id, o.ordered_on, o.channel, oi.qty, oi.unit_price_ngn
+        FROM orders o
+        JOIN order_items oi ON oi.order_id = o.id
+        WHERE o.customer_id = ?
+          AND o.status = 'completed'
+          AND o.offer_id = ?
+          AND oi.product_id = ?
+          AND oi.unit_price_ngn = ?
+        ORDER BY o.id DESC
+        LIMIT 1
+        """,
+        (int(customer_id), int(offer_id), int(product_id), int(unit_price)),
+    ).fetchone()
+    if row is None:
+        return None
+    qty = int(row["qty"])
+    return {
+        "ok": True,
+        "order_id": int(row["id"]),
+        "customer_id": int(customer_id),
+        "product_id": int(product_id),
+        "product_name": product["name"],
+        "requested_qty": qty,
+        "qty": qty,
+        "capped": False,
+        "max_per_order": MAX_QTY,
+        "unit": product["unit"],
+        "unit_price_ngn": int(row["unit_price_ngn"]),
+        "total_ngn": int(row["total_ngn"]),
+        "offer_id": int(offer_id),
+        "ordered_on": row["ordered_on"],
+        "channel": row["channel"],
+        "currency": "NGN",
+        "already_reserved": True,
+    }
+
+
 def _latest_valid_offer(conn: sqlite3.Connection, customer_id: int, product_id: int | None = None):
     sql = """
         SELECT * FROM offers
@@ -594,6 +639,7 @@ def place_order(
     product_id: int | None = None,
     product: str | None = None,
     offer_id: int | None = None,
+    add_bag: bool = False,
     **_extra,
 ) -> dict:
     try:
@@ -626,7 +672,9 @@ def place_order(
             return {"ok": False, "error": "Offer belongs to a different customer."}
         if int(offer["retailer_id"]) != retailer_id:
             return {"ok": False, "error": "Offer belongs to a different retailer."}
-        if offer["status"] not in ("drafted", "sent", "declined"):
+        # accepted stays usable. The first Yes marks the win-back accepted, and a
+        # later Yes in the demo has to reserve that same discounted bag again.
+        if offer["status"] not in ("drafted", "sent", "declined", "accepted"):
             return {"ok": False, "error": f"Offer is {offer['status']} and cannot be used."}
         if row is None:
             row = _product_by_id(conn, int(offer["product_id"]))
@@ -669,6 +717,12 @@ def place_order(
         unit_price = int(offer["offer_price_ngn"])
     else:
         unit_price = int(row["price_ngn"])
+    if offer_id is not None and not add_bag:
+        held = _same_price_reservation(conn, customer_id, int(row["id"]), offer_id, unit_price, row)
+        if held is not None:
+            with transaction(conn):
+                consume_confirmation(conn, int(confirmation["id"]))
+            return held
     total = unit_price * qty
     ordered_on = scenario_as_of(conn).isoformat()
     with transaction(conn):
