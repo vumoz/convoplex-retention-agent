@@ -20,6 +20,11 @@ from convoplex.money import naira
 
 IMAGE_PATH = "/images/generations"
 CARD = 1080
+# Bump when the card layout or the lookup key changes. Rows and files written
+# before this version do not match, so a bad production card is never resent.
+CARD_VERSION = "2"
+# WhatsApp replies wait on this. The admin promo route keeps a longer client.
+MUSE_REPLY_TIMEOUT_SECONDS = 12.0
 
 _PALETTES = {
     "provisions": ((16, 62, 46), (30, 112, 74), (214, 146, 62)),
@@ -126,7 +131,8 @@ def load_offer_for_card(conn, offer_id: int) -> dict | None:
     row = conn.execute(
         """
         SELECT o.id, o.offer_price_ngn, o.list_price_ngn, o.discount_percent,
-               o.customer_id, o.language, p.name AS product_name, p.category,
+               o.customer_id, o.retailer_id, o.product_id, o.language,
+               p.name AS product_name, p.category,
                r.name AS retailer_name, r.city
         FROM offers o
         JOIN products p ON p.id = o.product_id
@@ -143,12 +149,35 @@ def load_offer_for_card(conn, offer_id: int) -> dict | None:
         "offer_price_ngn": int(row["offer_price_ngn"]),
         "list_price_ngn": int(row["list_price_ngn"]),
         "discount_percent": int(row["discount_percent"]),
+        "product_id": int(row["product_id"]),
         "product_name": row["product_name"],
         "category": row["category"],
+        "retailer_id": int(row["retailer_id"]),
         "retailer_name": row["retailer_name"],
         "city": row["city"],
         "language": row["language"],
     }
+
+
+def promo_card_key(offer: dict) -> str:
+    """Identity of one card: version, customer, shop, product, offer, and price.
+
+    A cached file or blob is used only when this string matches. Changing the
+    version, the shop, the product, or the naira amount misses the old card.
+    """
+    return "|".join(
+        [
+            CARD_VERSION,
+            str(offer.get("customer_id") or ""),
+            str(offer.get("retailer_id") if offer.get("retailer_id") is not None else offer.get("retailer_name") or ""),
+            str(offer.get("product_id") if offer.get("product_id") is not None else ""),
+            str(offer.get("product_name") or ""),
+            str(offer.get("offer_id") or ""),
+            str(offer.get("offer_price_ngn") if offer.get("offer_price_ngn") is not None else ""),
+            str(offer.get("list_price_ngn") if offer.get("list_price_ngn") is not None else ""),
+            str(offer.get("discount_percent") if offer.get("discount_percent") is not None else ""),
+        ]
+    )
 
 
 _OVERLAY_OFF = {
@@ -391,8 +420,9 @@ def build_promo_image(
     base_url: str,
     model: str,
     client: httpx.Client | None = None,
+    timeout: float = 120.0,
 ) -> PromoImage:
-    """Mock mode draws a local placeholder. Live mode calls muse-image-1.0, then overlays."""
+    """Mock mode draws a local placeholder. Live mode calls muse-image-1.0, then overlays once."""
     prompt = promo_prompt(offer)
     overlay = overlay_copy(offer)
     if mode != "live":
@@ -405,7 +435,7 @@ def build_promo_image(
             "META_API_KEY is not set. Export it in your shell, or run with CONVOPLEX_LLM=mock."
         )
     owns = client is None
-    http = client or httpx.Client(timeout=120.0)
+    http = client or httpx.Client(timeout=timeout)
     started = time.perf_counter()
     try:
         raw = generate_image(prompt, api_key=api_key, base_url=base_url, model=model, client=http)
@@ -429,17 +459,24 @@ def save_promo_image(image: bytes, output_dir: Path | str, offer_id: int) -> Pat
     return path
 
 
-def save_promo_blob(conn, offer_id: int, image: bytes, media_type: str = "image/webp") -> None:
+def save_promo_blob(
+    conn,
+    offer_id: int,
+    image: bytes,
+    media_type: str = "image/webp",
+    card_key: str | None = None,
+) -> None:
     """Persist the card in the database. The serverless disk does not keep files."""
     conn.execute(
         """
-        INSERT INTO promo_cards (offer_id, image, media_type)
-        VALUES (?, ?, ?)
+        INSERT INTO promo_cards (offer_id, image, media_type, card_key)
+        VALUES (?, ?, ?, ?)
         ON CONFLICT(offer_id) DO UPDATE SET
             image = excluded.image,
-            media_type = excluded.media_type
+            media_type = excluded.media_type,
+            card_key = excluded.card_key
         """,
-        (int(offer_id), image, media_type),
+        (int(offer_id), image, media_type, card_key),
     )
     conn.commit()
 
@@ -457,18 +494,54 @@ def load_promo_blob(conn, offer_id: int) -> bytes | None:
     return bytes(blob)
 
 
-def remember_promo(conn, image: bytes, output_dir: Path | str, offer_id: int) -> Path:
+def remember_promo(
+    conn,
+    image: bytes,
+    output_dir: Path | str,
+    offer_id: int,
+    card_key: str | None = None,
+) -> Path:
     """Write the file when the disk allows it, and always store the bytes in the DB."""
+    if card_key is None:
+        offer = load_offer_for_card(conn, offer_id)
+        if offer is not None:
+            card_key = promo_card_key(offer)
     path = Path(output_dir) / "promo" / promo_filename(offer_id)
     try:
         path = save_promo_image(image, output_dir, offer_id)
     except OSError:
         pass
-    save_promo_blob(conn, offer_id, image)
+    save_promo_blob(conn, offer_id, image, card_key=card_key)
     return path
 
 
-def read_promo_bytes(conn, output_dir: Path | str, offer_id: int) -> bytes | None:
+def _blob_bytes(value) -> bytes | None:
+    if value is None:
+        return None
+    if isinstance(value, memoryview):
+        value = bytes(value)
+    else:
+        value = bytes(value)
+    return value or None
+
+
+def read_promo_bytes(conn, output_dir: Path | str, offer_id: int, card_key: str | None = None) -> bytes | None:
+    """Return a cached card only when its key matches this offer.
+
+    A file named offer-{id}.webp is not enough. Production rows written before
+    the versioned key, and files left beside them, are ignored.
+    """
+    if conn is None or not card_key:
+        return None
+    row = conn.execute(
+        "SELECT image, card_key FROM promo_cards WHERE offer_id = ?",
+        (int(offer_id),),
+    ).fetchone()
+    if row is None or str(row["card_key"] or "") != card_key:
+        return None
+    blob = _blob_bytes(row["image"])
+    if blob:
+        return blob
     path = Path(output_dir) / "promo" / promo_filename(offer_id)
     if path.is_file():
         try:
@@ -476,10 +549,8 @@ def read_promo_bytes(conn, output_dir: Path | str, offer_id: int) -> bytes | Non
             if data:
                 return data
         except OSError:
-            pass
-    if conn is None:
-        return None
-    return load_promo_blob(conn, offer_id)
+            return None
+    return None
 
 
 def clear_promo_cards(output_dir: Path | str) -> None:

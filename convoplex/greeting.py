@@ -211,6 +211,37 @@ def _offer_line(language: str, product: str, price: str, *, greeted: bool) -> st
     return f"{product} is {price}. Shall I set one aside for you?"
 
 
+_PICTURE_EXTRA = frozenset(
+    {"give", "send", "make", "want", "need", "abeg", "pls", "please", "one", "bag", "bags"}
+)
+
+
+def picture_query(text: str | None) -> str:
+    """The product a picture request is about.
+
+    'the rice' and 'picture of the rice' are this shop's Mama Gold. A named bag
+    such as Cap Rice or Ofada stays specific, because a leftover word remains.
+    """
+    raw = text or ""
+    folded = _fold(raw)
+    if "rice" not in folded:
+        return raw
+    scrubbed = re.sub(r"[^\w\s]+", " ", folded, flags=re.UNICODE)
+    leftover = [
+        word
+        for word in scrubbed.split()
+        if word not in _FILLER
+        and word not in _PICTURE_EXTRA
+        and word not in SALUTATION_TOKENS
+        and word != "my"
+        and word != "rice"
+        and len(word) > 1
+    ]
+    if not leftover:
+        return "rice"
+    return raw
+
+
 def present_offer(conn, profile: dict, text: str) -> dict | None:
     """The open offer, or a new one for the product they just named.
 
@@ -220,13 +251,18 @@ def present_offer(conn, profile: dict, text: str) -> dict | None:
     from convoplex.tools import create_offer, find_products
 
     customer_id = int(profile.get("id") or profile["customer_id"])
+    retailer_id = int(profile["retailer_id"])
     held = open_offer(conn, customer_id)
+    if held and (
+        int(held.get("customer_id") or 0) != customer_id
+        or int(held.get("retailer_id") or 0) != retailer_id
+    ):
+        held = None
     focus = sale_focus(text)
     if held is None or (focus and not _offer_matches(conn, profile, held, focus)):
         query = focus or (profile.get("favourite_product") or {}).get("name") or ""
         if not query:
             return held
-        retailer_id = int(profile["retailer_id"])
         if not find_products(conn, retailer_id, query, limit=1):
             return held
         created = create_offer(conn, customer_id=customer_id, discount_percent=10, product=query)
@@ -247,9 +283,12 @@ def present_offer(conn, profile: dict, text: str) -> dict | None:
 
 
 def _offer_matches(conn, profile: dict, offer: dict, focus: str) -> bool:
-    from convoplex.tools import find_products
+    from convoplex.tools import find_products, is_generic_rice
 
     name = str(offer.get("product_name") or "").lower()
+    # "rice" is inside "Cap Rice" too. Generic rice means this shop's Mama Gold.
+    if is_generic_rice(focus):
+        return "mama gold" in name
     if focus.lower() in name:
         return True
     retailer_id = int(profile.get("retailer_id") or offer.get("retailer_id") or 0)

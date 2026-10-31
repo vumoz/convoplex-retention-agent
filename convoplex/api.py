@@ -39,8 +39,9 @@ from convoplex.integrations.images import (
     build_promo_image,
     clear_promo_cards,
     load_offer_for_card,
-    load_promo_blob,
+    promo_card_key,
     promo_filename,
+    read_promo_bytes,
     remember_promo,
     render_promo_card,
 )
@@ -844,16 +845,15 @@ def create_app(settings: Settings | None = None, *, generate_if_missing: bool = 
         try:
             conn = open_db(settings)
             try:
-                blob = load_promo_blob(conn, offer_id)
+                offer = load_offer_for_card(conn, offer_id)
+                if offer is not None:
+                    blob = read_promo_bytes(conn, media_root, offer_id, promo_card_key(offer))
             finally:
                 conn.close()
         except Exception:
             blob = None
         if blob:
             return Response(content=blob, media_type="image/webp")
-        path = media_root / "promo" / name
-        if path.is_file():
-            return FileResponse(path)
         raise HTTPException(404, "promo card not found")
 
     app.mount("/media", StaticFiles(directory=str(media_root)), name="media")

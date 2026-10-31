@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from datetime import datetime, timezone
 
@@ -314,6 +315,21 @@ def _customer(conn: sqlite3.Connection, customer_id: int):
     return conn.execute("SELECT * FROM customers WHERE id = ?", (customer_id,)).fetchone()
 
 
+def is_generic_rice(query: str | None) -> bool:
+    """True for 'rice', not for a named brand such as Cap Rice or Mama Gold."""
+    folded = re.sub(r"[^a-z\s]+", " ", (query or "").lower())
+    folded = re.sub(r"\s+", " ", folded).strip()
+    return folded in {"rice", "the rice"}
+
+
+def _stocked_mama_gold(rows) -> sqlite3.Row | None:
+    """This shop's rice is Mama Gold when it is on the shelf."""
+    for row in rows:
+        if int(row["stock_qty"]) > 0 and "mama gold" in str(row["name"]).lower():
+            return row
+    return None
+
+
 def _resolve_product(conn, customer, product_id, product):
     if product_id is not None:
         row = conn.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
@@ -324,9 +340,14 @@ def _resolve_product(conn, customer, product_id, product):
         return row, None
     if not product:
         return None, {"ok": False, "error": "Pass product_id or product."}
-    matches = find_products(conn, int(customer["retailer_id"]), product, limit=1)
+    retailer_id = int(customer["retailer_id"])
+    matches = find_products(conn, retailer_id, product, limit=8)
     if not matches:
         return None, {"ok": False, "error": f"No product matching {product!r} for this customer's shop."}
+    if is_generic_rice(product):
+        preferred = _stocked_mama_gold(matches)
+        if preferred is not None:
+            return preferred, None
     return matches[0], None
 
 
