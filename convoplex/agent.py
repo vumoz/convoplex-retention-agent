@@ -64,7 +64,14 @@ from convoplex.substitute import unstocked_request
 from convoplex.purchase import confirm_purchase, note_clarification, note_declined, requested_qty
 from convoplex.money import naira
 from convoplex.prompts import build_messages
-from convoplex.tools import TOOLS, execute_tool, mark_offer_declined, mark_offer_sent
+from convoplex.tools import (
+    TOOLS,
+    execute_tool,
+    is_generic_rice,
+    mark_offer_declined,
+    mark_offer_sent,
+    named_stocked_product,
+)
 
 MAX_ROUNDS = 6
 
@@ -196,9 +203,33 @@ def _run(
     asked_language = explicit_language(user_text) if task == "reply" else None
     pivot = unstocked_request(conn, user_text, profile) if task == "reply" else None
     decision = _reply_decision(user_text, profile, from_voice) if task == "reply" else None
+    named_product = None
+    generic_rice = False
+    if task == "reply" and decision != "decline" and not asked_language:
+        named_product = named_stocked_product(conn, int(profile["retailer_id"]), user_text or "")
+        generic_rice = named_product is None and is_generic_rice(user_text or "")
+    if decision == "accept" and named_product is not None:
+        decision = None
     if task == "reply" and wants_product_image(user_text) and decision != "decline":
         # A picture request wins over a greeting or a product pitch in the same sentence.
         decision = "picture"
+    elif (
+        task == "reply"
+        and named_product is not None
+        and decision not in {"decline", "accept", "confirm"}
+        and not asked_language
+    ):
+        # A brand they named replaces the product already on the table.
+        # The won't-buy clarify stays a clarify, even if a brand is in that sentence.
+        decision = "product"
+    elif (
+        task == "reply"
+        and generic_rice
+        and not has_market_address(user_text)
+        and decision not in {"decline", "accept", "confirm"}
+        and not asked_language
+    ):
+        decision = "product"
     elif task == "reply" and has_market_address(user_text) and decision != "decline":
         # "My customer, I wan buy rice" opens the sale. It is not a yes and not a brand.
         decision = "greet"
@@ -447,6 +478,24 @@ def _run(
         text = greeting_reply(profile, user_text or "", held or None)
         if reply_is_only_address(text):
             text = _full_sale_line(profile, held, user_text or "")
+        if held.get("offer_id") is not None:
+            confirm_offer_id = int(held["offer_id"])
+            pending_greet_offer = held
+    elif decision == "product":
+        intent = "question"
+        order = None
+        held = present_offer(conn, profile, user_text or "") or {}
+        if held:
+            profile["open_offer"] = held
+        text = question_message(
+            profile,
+            held.get("product_name"),
+            int(held["offer_price_ngn"]) if held.get("offer_price_ngn") is not None else None,
+            held.get("stock_qty"),
+        )
+        address = customer_address(user_text or "")
+        if address and address.lower() not in text.lower():
+            text = f"{address}, {text}"
         if held.get("offer_id") is not None:
             confirm_offer_id = int(held["offer_id"])
             pending_greet_offer = held
@@ -708,6 +757,9 @@ def _reply_decision(user_text: str | None, profile: dict, from_voice: bool) -> s
         return "accept" if offer_id else None
     if explicit_refusal(user_text):
         return "decline"
+    # "I wan buy rice" names the goods. It is not a yes to whatever was offered last.
+    if is_generic_rice(user_text):
+        return None
     if clear_affirmative(user_text) and offer_id:
         return "accept"
     if _pcm_voice_clarify(user_text, from_voice, profile.get("language"), offer):
