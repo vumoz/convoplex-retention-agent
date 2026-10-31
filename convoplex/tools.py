@@ -251,7 +251,17 @@ def find_products(conn: sqlite3.Connection, retailer_id: int, query: str, limit:
         if rank is None:
             continue
         scored.append((rank, row))
-    scored.sort(key=lambda item: (item[0], item[1]["name"]))
+    if is_generic_rice(query):
+        # "rice" matches every rice. Cap Rice must not win just because C comes first.
+        scored.sort(
+            key=lambda item: (
+                item[0],
+                0 if "mama gold" in str(item[1]["name"]).lower() else 1,
+                item[1]["name"],
+            )
+        )
+    else:
+        scored.sort(key=lambda item: (item[0], item[1]["name"]))
     return [row for _, row in scored[:limit]]
 
 
@@ -315,11 +325,107 @@ def _customer(conn: sqlite3.Connection, customer_id: int):
     return conn.execute("SELECT * FROM customers WHERE id = ?", (customer_id,)).fetchone()
 
 
+_RICE_NOISE = frozenset(
+    {
+        "i", "im", "wan", "wont", "wanna", "want", "need", "buy", "please", "abeg",
+        "the", "a", "am", "for", "me", "you", "to", "some", "of", "get", "and", "na",
+        "o", "oo", "show", "see", "look", "like", "let", "send", "give", "make",
+        "picture", "pictures", "pic", "pics", "pix", "image", "images", "photo",
+        "photos", "foto", "fotos", "flier", "flyer", "fliers", "flyers", "wetin",
+        "how", "much", "now", "last", "price", "about", "what", "be", "is", "it",
+        "this", "that", "bag", "bags", "one", "dey", "hold", "keep", "any", "just",
+        "still", "again", "your", "our", "shop", "my", "customer", "costoma",
+        "kustoma", "customa", "kostomer", "oga", "madam", "pls", "do", "have",
+        "can", "we", "with", "from", "when", "them", "abeg",
+    }
+)
+_SIZE = re.compile(r"^\d+(?:kg|g|l|ml|mg)?$")
+_NOT_BRAND = frozenset(
+    {
+        "rice", "bag", "bags", "pack", "carton", "tin", "piece", "bucket", "keg",
+        "oil", "bottle", "set", "yard", "yards",
+    }
+)
+
+
+def _tokens(text: str | None) -> list[str]:
+    return re.findall(r"[a-z0-9]+", (text or "").lower())
+
+
 def is_generic_rice(query: str | None) -> bool:
-    """True for 'rice', not for a named brand such as Cap Rice or Mama Gold."""
-    folded = re.sub(r"[^a-z\s]+", " ", (query or "").lower())
-    folded = re.sub(r"\s+", " ", folded).strip()
-    return folded in {"rice", "the rice"}
+    """True when they asked for rice and did not name a brand.
+
+    'I wan buy rice' and 'how much be the rice' count. 'Cap Rice' and
+    'Mama Gold' do not.
+    """
+    words = _tokens(query)
+    if "rice" not in words:
+        return False
+    return all(word in _RICE_NOISE or word == "rice" for word in words)
+
+
+def _brand_tokens(name: str) -> list[str]:
+    tokens = []
+    for token in _tokens(name):
+        if token in _NOT_BRAND or token in _RICE_NOISE or _SIZE.match(token):
+            continue
+        tokens.append(token)
+    return tokens
+
+
+def named_stocked_product(conn, retailer_id: int, text: str | None):
+    """The in-stock product whose brand words appear in the message.
+
+    'mama gold' matches Mama Gold Rice. 'cap rice' matches Cap Rice.
+    'caprice' matches neither, and the word 'rice' on its own matches nothing.
+    """
+    words = set(_tokens(text))
+    if not words:
+        return None
+    rows = conn.execute(
+        "SELECT * FROM products WHERE retailer_id = ? AND stock_qty > 0 ORDER BY name",
+        (int(retailer_id),),
+    ).fetchall()
+    best = None
+    best_key = None
+    folded = " ".join(_tokens(text))
+    for row in rows:
+        tokens = _brand_tokens(row["name"])
+        if not tokens or any(token not in words for token in tokens):
+            continue
+        position = max(folded.find(token) for token in tokens)
+        key = (len(tokens), position)
+        if best_key is None or key > best_key:
+            best = row
+            best_key = key
+    return best
+
+
+def preferred_rice_product(conn, retailer_id: int, favourite: dict | None):
+    """The rice this customer is being won back on, else Mama Gold.
+
+    Alphabetical order is not a choice. Cap Rice is used only when it is the
+    favourite, or when it is the only rice on the shelf.
+    """
+    rows = conn.execute(
+        "SELECT * FROM products WHERE retailer_id = ? AND stock_qty > 0 ORDER BY name",
+        (int(retailer_id),),
+    ).fetchall()
+    rice = [row for row in rows if "rice" in str(row["name"]).lower()]
+    if not rice:
+        return None
+    fav_id = (favourite or {}).get("product_id")
+    fav_name = str((favourite or {}).get("name") or "").lower()
+    if fav_id is not None and "rice" in fav_name:
+        for row in rice:
+            if int(row["id"]) == int(fav_id):
+                return row
+    for row in rice:
+        if "mama gold" in str(row["name"]).lower():
+            return row
+    if len(rice) == 1:
+        return rice[0]
+    return None
 
 
 def _stocked_mama_gold(rows) -> sqlite3.Row | None:

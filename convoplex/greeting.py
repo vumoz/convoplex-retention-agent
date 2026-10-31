@@ -245,10 +245,17 @@ def picture_query(text: str | None) -> str:
 def present_offer(conn, profile: dict, text: str) -> dict | None:
     """The open offer, or a new one for the product they just named.
 
-    A greeting with no offer yet must still quote a database price.
+    A named brand replaces whatever was offered before. A plain rice request
+    uses this customer's win-back rice, which is Mama Gold for the demo shop.
     """
     from convoplex.context import open_offer
-    from convoplex.tools import create_offer, find_products
+    from convoplex.tools import (
+        create_offer,
+        find_products,
+        is_generic_rice,
+        named_stocked_product,
+        preferred_rice_product,
+    )
 
     customer_id = int(profile.get("id") or profile["customer_id"])
     retailer_id = int(profile["retailer_id"])
@@ -258,6 +265,13 @@ def present_offer(conn, profile: dict, text: str) -> dict | None:
         or int(held.get("retailer_id") or 0) != retailer_id
     ):
         held = None
+    named = named_stocked_product(conn, retailer_id, text)
+    if named is not None:
+        return _ensure_offer(conn, profile, held, named)
+    if is_generic_rice(text) or is_generic_rice(sale_focus(text)):
+        preferred = preferred_rice_product(conn, retailer_id, profile.get("favourite_product"))
+        if preferred is not None:
+            return _ensure_offer(conn, profile, held, preferred)
     focus = sale_focus(text)
     if held is None or (focus and not _offer_matches(conn, profile, held, focus)):
         query = focus or (profile.get("favourite_product") or {}).get("name") or ""
@@ -268,18 +282,76 @@ def present_offer(conn, profile: dict, text: str) -> dict | None:
         created = create_offer(conn, customer_id=customer_id, discount_percent=10, product=query)
         if not created.get("ok"):
             return held
-        held = {
-            "offer_id": int(created["offer_id"]),
-            "product_id": int(created["product_id"]),
-            "product_name": created["product_name"],
-            "offer_price_ngn": int(created["offer_price_ngn"]),
-            "list_price_ngn": int(created["list_price_ngn"]),
-            "discount_percent": int(created["discount_percent"]),
-            "stock_qty": created.get("stock_qty"),
-            "retailer_id": int(created["retailer_id"]),
-            "customer_id": customer_id,
-        }
+        held = _held_from_created(created, customer_id)
     return held
+
+
+def _held_from_created(created: dict, customer_id: int) -> dict:
+    return {
+        "offer_id": int(created["offer_id"]),
+        "product_id": int(created["product_id"]),
+        "product_name": created["product_name"],
+        "offer_price_ngn": int(created["offer_price_ngn"]),
+        "list_price_ngn": int(created["list_price_ngn"]),
+        "discount_percent": int(created["discount_percent"]),
+        "stock_qty": created.get("stock_qty"),
+        "retailer_id": int(created["retailer_id"]),
+        "customer_id": customer_id,
+        "status": created.get("status") or "drafted",
+    }
+
+
+def _ensure_offer(conn, profile: dict, held: dict | None, product) -> dict | None:
+    """Reuse a live offer for this product, or open a new one. A declined offer does not stick."""
+    from convoplex.tools import create_offer
+
+    product_id = int(product["id"])
+    customer_id = int(profile.get("id") or profile["customer_id"])
+    retailer_id = int(profile["retailer_id"])
+    if (
+        held
+        and int(held.get("product_id") or 0) == product_id
+        and held.get("status") != "declined"
+    ):
+        return held
+    row = conn.execute(
+        """
+        SELECT o.id, o.product_id, o.discount_percent, o.list_price_ngn, o.offer_price_ngn,
+               o.status, p.name AS product_name, p.stock_qty
+        FROM offers o
+        JOIN products p ON p.id = o.product_id
+        WHERE o.customer_id = ?
+          AND o.retailer_id = ?
+          AND o.product_id = ?
+          AND o.status IN ('drafted', 'sent')
+          AND p.stock_qty > 0
+        ORDER BY o.id DESC
+        LIMIT 1
+        """,
+        (customer_id, retailer_id, product_id),
+    ).fetchone()
+    if row is not None:
+        return {
+            "offer_id": int(row["id"]),
+            "product_id": int(row["product_id"]),
+            "product_name": row["product_name"],
+            "offer_price_ngn": int(row["offer_price_ngn"]),
+            "list_price_ngn": int(row["list_price_ngn"]),
+            "discount_percent": int(row["discount_percent"]),
+            "stock_qty": int(row["stock_qty"]),
+            "retailer_id": retailer_id,
+            "customer_id": customer_id,
+            "status": row["status"],
+        }
+    created = create_offer(
+        conn,
+        customer_id=customer_id,
+        discount_percent=10,
+        product_id=product_id,
+    )
+    if not created.get("ok"):
+        return held
+    return _held_from_created(created, customer_id)
 
 
 def _offer_matches(conn, profile: dict, offer: dict, focus: str) -> bool:
