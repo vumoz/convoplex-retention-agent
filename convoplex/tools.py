@@ -349,7 +349,11 @@ _NOT_BRAND = frozenset(
 
 
 def _tokens(text: str | None) -> list[str]:
-    return re.findall(r"[a-z0-9]+", (text or "").lower())
+    """Words with apostrophes removed, so won't is one token and not 'won' + 't'."""
+    raw = (text or "").lower()
+    for mark in ("'", "’", "‘", "`"):
+        raw = raw.replace(mark, "")
+    return re.findall(r"[a-z0-9]+", raw)
 
 
 def is_generic_rice(query: str | None) -> bool:
@@ -401,39 +405,38 @@ def named_stocked_product(conn, retailer_id: int, text: str | None):
     return best
 
 
-def preferred_rice_product(conn, retailer_id: int, favourite: dict | None):
-    """The rice this customer is being won back on, else Mama Gold.
+def preferred_rice_product(conn, retailer_id: int, favourite: dict | None = None, customer_id: int | None = None):
+    """Most-bought in-stock rice for this customer, else the shop's best seller.
 
-    Alphabetical order is not a choice. Cap Rice is used only when it is the
-    favourite, or when it is the only rice on the shelf.
+    The stored win-back offer is not a vote, and the name sort is not a vote.
+    `favourite` is ignored; sales of rice at this shop decide.
     """
+    del favourite
     rows = conn.execute(
-        "SELECT * FROM products WHERE retailer_id = ? AND stock_qty > 0 ORDER BY name",
-        (int(retailer_id),),
+        """
+        SELECT p.id, p.name, p.price_ngn, p.stock_qty,
+               COALESCE(SUM(CASE WHEN o.customer_id = ? AND o.status = 'completed' THEN oi.qty ELSE 0 END), 0) AS mine,
+               COALESCE(SUM(CASE WHEN o.status = 'completed' THEN oi.qty ELSE 0 END), 0) AS shop_qty
+        FROM products p
+        LEFT JOIN order_items oi ON oi.product_id = p.id
+        LEFT JOIN orders o ON o.id = oi.order_id AND o.retailer_id = p.retailer_id
+        WHERE p.retailer_id = ? AND p.stock_qty > 0
+        GROUP BY p.id, p.name, p.price_ngn, p.stock_qty
+        """,
+        (int(customer_id or 0), int(retailer_id)),
     ).fetchall()
     rice = [row for row in rows if "rice" in str(row["name"]).lower()]
     if not rice:
         return None
-    fav_id = (favourite or {}).get("product_id")
-    fav_name = str((favourite or {}).get("name") or "").lower()
-    if fav_id is not None and "rice" in fav_name:
-        for row in rice:
-            if int(row["id"]) == int(fav_id):
-                return row
-    for row in rice:
-        if "mama gold" in str(row["name"]).lower():
-            return row
-    if len(rice) == 1:
-        return rice[0]
-    return None
-
-
-def _stocked_mama_gold(rows) -> sqlite3.Row | None:
-    """This shop's rice is Mama Gold when it is on the shelf."""
-    for row in rows:
-        if int(row["stock_qty"]) > 0 and "mama gold" in str(row["name"]).lower():
-            return row
-    return None
+    rice.sort(
+        key=lambda row: (
+            -int(row["mine"] or 0),
+            -int(row["shop_qty"] or 0),
+            -int(row["stock_qty"] or 0),
+            int(row["id"]),
+        )
+    )
+    return rice[0]
 
 
 def _resolve_product(conn, customer, product_id, product):
@@ -451,9 +454,11 @@ def _resolve_product(conn, customer, product_id, product):
     if not matches:
         return None, {"ok": False, "error": f"No product matching {product!r} for this customer's shop."}
     if is_generic_rice(product):
-        preferred = _stocked_mama_gold(matches)
+        preferred = preferred_rice_product(conn, retailer_id, customer_id=int(customer["id"]))
         if preferred is not None:
-            return preferred, None
+            full = conn.execute("SELECT * FROM products WHERE id = ?", (int(preferred["id"]),)).fetchone()
+            if full is not None:
+                return full, None
     return matches[0], None
 
 
